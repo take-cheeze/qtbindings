@@ -2436,10 +2436,6 @@ create_qt_class(mrb_state* M, mrb_value /*self*/)
 	RClass* klass = mrb_class_ptr(module_value);
 	QString packageName(package);
 
-/*
-    mrb_define_singleton_method(module_value, "method_missing", (mrb_value (*) (...)) module_method_missing, -1);
-    mrb_define_singleton_method(module_value, "const_missing", (mrb_value (*) (...)) module_method_missing, -1);
-*/
 	foreach(QString s, packageName.mid(strlen(moduleName) + 2).split("::")) {
 		klass = mrb_define_class_under(M, klass, (const char*) s.toLatin1(), qt_base_class(M));
     MRB_SET_INSTANCE_TT(klass, MRB_TT_DATA);
