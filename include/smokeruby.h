@@ -12,16 +12,6 @@
 
 #include <smoke.h>
 
-#undef DEBUG
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#ifndef __USE_POSIX
-#define __USE_POSIX
-#endif
-#ifndef __USE_XOPEN
-#define __USE_XOPEN
-#endif
 #include <mruby.h>
 
 #include <QtCore/qbytearray.h>

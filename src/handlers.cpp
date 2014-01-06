@@ -178,10 +178,10 @@ mark_qstandarditem_children(mrb_state* M, QStandardItem * item)
 }
 
 void
-smokeruby_mark(mrb_state* M, void * p)
+smokeruby_mark(mrb_state* M, mrb_value obj_)
 {
 	mrb_value obj;
-    smokeruby_object * o = (smokeruby_object *) p;
+  smokeruby_object * o = (smokeruby_object *) DATA_PTR(obj_);
     const char *className = o->smoke->classes[o->classId].className;
 
 	if (do_debug & qtdb_gc) qWarning("Checking for mark (%s*)%p", className, o->ptr);
@@ -375,10 +375,10 @@ smokeruby_mark(mrb_state* M, void * p)
 }
 
 void
-smokeruby_free(mrb_state* M, void * p)
+smokeruby_free(mrb_state* M, void* p)
 {
-    smokeruby_object *o = (smokeruby_object*)p;
-    const char *className = o->smoke->classes[o->classId].className;
+  smokeruby_object *o = static_cast<smokeruby_object*>(p);
+  const char *className = o->smoke->classes[o->classId].className;
 
 	if(do_debug & qtdb_gc) qWarning("Checking for delete (%s*)%p allocated: %s", className, o->ptr, o->allocated ? "true" : "false");
 
@@ -955,29 +955,9 @@ static QTextCodec *codec = 0;
 
 QString*
 qstringFromRString(mrb_state* M, mrb_value rstring) {
+  // force UTF-8
   rstring = mrb_str_to_str(M, rstring);
   return new QString(QString::fromUtf8(RSTRING_PTR(rstring), RSTRING_LEN(rstring)));
-  /*
-	mrb_value encoding = mrb_funcall(M, rstring, "encoding", 0);
-	encoding = mrb_funcall(M, encoding, "to_s", 0);
-	const char * enc_s = RSTRING_PTR(encoding);
-
-  rstring = mrb_str_to_str(M, rstring);
-
-	if (qstrcmp(enc_s, "UTF-8") == 0) {
-		return new QString(QString::fromUtf8(RSTRING_PTR(rstring), RSTRING_LEN(rstring)));
-	} else if (qstrcmp(enc_s, "EUC-JP") == 0) {
-		codec = QTextCodec::codecForName("eucJP");
-		return new QString(codec->toUnicode(RSTRING_PTR(rstring)));
-	} else if (qstrcmp(enc_s, "Shift-JIS") == 0) {
-		codec = QTextCodec::codecForName("Shift-JIS");
-		return new QString(codec->toUnicode(RSTRING_PTR(rstring)));
-	} else if(qstrcmp(enc_s, "ISO-8859-1") == 0 || qstrcmp(enc_s, "US-ASCII") == 0) {
-		return new QString(QString::fromLatin1(RSTRING_PTR(rstring)));
-	}
-
-	return new QString(QString::fromLocal8Bit(RSTRING_PTR(rstring), RSTRING_LEN(rstring)));
-  */
 }
 
 mrb_value
@@ -1153,7 +1133,7 @@ void marshall_QDBusVariant(Marshall *m) {
 
 		obj = set_obj_info(m->M, "Qt::DBusVariant", o);
 		if (do_debug & qtdb_calls) {
-			printf("allocating %s %p -> %s\n", "Qt::DBusVariant", o->ptr, mrb_string_value_ptr(m->M, obj));
+			qWarning("allocating %s %p -> %s\n", "Qt::DBusVariant", o->ptr, mrb_string_value_ptr(m->M, obj));
 		}
 
 		if (m->type().isStack()) {

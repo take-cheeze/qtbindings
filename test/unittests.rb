@@ -1,151 +1,117 @@
-require 'Qt'
-require 'test/unit'
+assert('QWidget inheritance') do
+  widget = Qt::Widget.new
+  assert_true widget.inherits("Qt::Widget")
+  assert_true widget.inherits("Qt::Object")
+  assert_true widget.inherits("QObject")
+end
 
-class TestQtRuby < Test::Unit::TestCase
+assert('QString marshall') do
+  widget = Qt::Widget.new
+  assert_nil widget.objectName
+  widget.objectName = "Barney"
+  assert_equal widget.objectName, "Barney"
+end
 
-  def setup
-    @app = Qt::Application.instance || Qt::Application.new(ARGV)
-    assert @app
-  end
+assert('Qt::Widget#children') do
+  w1 = Qt::Widget.new
+  w2 = Qt::Widget.new w1
+  w3 = Qt::Widget.new w1
 
-  def test_link_against_qt4
-    assert_raise(NoMethodError) { @app.setMainWidget(nil) }
-  end
+  assert w1.children == [ w2, w3 ]
+end
 
-  def test_qapplication_methods
-   assert @app == Qt::Application::instance
-   assert @app == Qt::CoreApplication::instance
-   assert @app == Qt::Application.instance
-   assert @app == Qt::CoreApplication.instance
-   assert @app == $qApp
-  end
+assert('Qt::Widget#findChildren') do
+  w = Qt::Widget.new
+  assert_raise(TypeError) { w.findChildren(nil) }
 
-  def test_qapplication_inheritance
-   assert @app.inherits("Qt::Application")
-   assert @app.inherits("Qt::CoreApplication")
-   assert @app.inherits("Qt::Object")
-  end
+  assert_equal w.findChildren(Qt::Widget), [ ]
+  w2 = Qt::Widget.new w
 
-  def test_widget_inheritance
-    widget = Qt::Widget.new(nil)
-    assert widget.inherits("Qt::Widget")
-    assert widget.inherits("Qt::Object")
-    assert widget.inherits("QObject")
-  end
+  assert_equal w.findChildren(Qt::Widget), [ w2 ]
+  assert_equal w.findChildren(Qt::Object), [ w2 ]
+  assert_equal w.findChildren(Qt::LineEdit), [ ]
+  assert_equal w.findChildren(Qt::Widget,"Bob"), [ ]
+  assert_equal w.findChildren(Qt::Object,"Bob"), [ ]
 
-  def test_qstring_marshall
-    widget = Qt::Widget.new(nil)
-    assert widget.objectName.nil?
-    widget.objectName = "Barney"
-    assert widget.objectName == "Barney"
-  end
+  w2.objectName = "Bob"
 
-  def test_widgetlist
-    w1 = Qt::Widget.new(nil)
-    w2 = Qt::Widget.new(w1)
-    w3 = Qt::Widget.new(w1)
-    w4 = Qt::Widget.new(w2)
+  assert_equal w.findChildren(Qt::Widget), [ w2 ]
+  assert_equal w.findChildren(Qt::Object), [ w2 ]
+  assert_equal w.findChildren(Qt::Widget,"Bob"), [ w2 ]
+  assert_equal w.findChildren(Qt::Object,"Bob"), [ w2 ]
+  assert_equal w.findChildren(Qt::LineEdit, "Bob"), [ ]
 
-    assert w1.children == [ w2, w3 ]
-  end
+  w3 = Qt::Widget.new w
+  w4 = Qt::LineEdit.new w2
+  w4.setObjectName("Bob")
 
-  def test_find_children
-    w = Qt::Widget.new(nil)
-    assert_raise(TypeError) { w.findChildren(nil) }
+  assert_equal w.findChildren(Qt::Widget), [ w4, w2, w3 ]
+  assert_equal w.findChildren(Qt::LineEdit), [ w4 ]
+  assert_equal w.findChildren(Qt::Widget,"Bob"), [ w4, w2 ]
+  assert_equal w.findChildren(Qt::LineEdit,"Bob"), [ w4 ]
+end
 
-    assert w.findChildren(Qt::Widget) == [ ]
-    w2 = Qt::Widget.new(w)
+assert('Qt::Widget#findChild') do
+  w = Qt::Widget.new
+  assert_raise(TypeError) { w.findChild(nil) }
 
-    assert w.findChildren(Qt::Widget) == [ w2 ]
-    assert w.findChildren(Qt::Object) == [ w2 ]
-    assert w.findChildren(Qt::LineEdit) == [ ]
-    assert w.findChildren(Qt::Widget,"Bob") == [ ]
-    assert w.findChildren(Qt::Object,"Bob") == [ ]
+  assert_nil w.findChild(Qt::Widget)
+  w2 = Qt::Widget.new w
 
-    w2.objectName = "Bob"
+  w3 = Qt::Widget.new w
+  w3.objectName = "Bob"
+  w4 = Qt::LineEdit.new w2
+  w4.objectName = "Bob"
 
-    assert w.findChildren(Qt::Widget) == [ w2 ]
-    assert w.findChildren(Qt::Object) == [ w2 ]
-    assert w.findChildren(Qt::Widget,"Bob") == [ w2 ]
-    assert w.findChildren(Qt::Object,"Bob") == [ w2 ]
-    assert w.findChildren(Qt::LineEdit, "Bob") == [ ]
+  assert_equal w.findChild(Qt::Widget,"Bob"), w3
+  assert_equal w.findChild(Qt::LineEdit,"Bob"), w4
+end
 
-    w3 = Qt::Widget.new(w)
-    w4 = Qt::LineEdit.new(w2)
-    w4.setObjectName("Bob")
+assert('boolean marshalling') do
+  assert_true Qt::Variant.new(true).toBool
+  assert_true !Qt::Variant.new(false).toBool
 
-    assert w.findChildren(Qt::Widget) == [ w4, w2, w3 ]
-    assert w.findChildren(Qt::LineEdit) == [ w4 ]
-    assert w.findChildren(Qt::Widget,"Bob") == [ w4, w2 ]    
-    assert w.findChildren(Qt::LineEdit,"Bob") == [ w4 ]    
-  end
+  assert_false Qt::Boolean.new(true).nil?
+  assert_nil Qt::Boolean.new(false)
 
-  def test_find_child
-    w = Qt::Widget.new(nil)
-    assert_raise(TypeError) { w.findChild(nil) }
+  # Invalid variant conversion should change b to false
+  b = Qt::Boolean.new(true)
+  v = Qt::Variant.new("Blah")
+  v.toInt(b)
 
-    assert_nil w.findChild(Qt::Widget)
-    w2 = Qt::Widget.new(w)
+  assert_nil b
+end
 
-    w3 = Qt::Widget.new(w)
-    w3.objectName = "Bob"
-    w4 = Qt::LineEdit.new(w2)
-    w4.objectName = "Bob"
+assert('Qt::Integer#value') do
+  assert_equal Qt::Integer.new(100).value, 100
+end
 
-    assert w.findChild(Qt::Widget,"Bob") == w3
-    assert w.findChild(Qt::LineEdit,"Bob") == w4
-  end
+assert('Qt::Variant') do
+  v = Qt::Variant.new(Qt::Variant::Invalid)
 
-  def test_boolean_marshalling
-    assert Qt::Variant.new(true).toBool
-    assert !Qt::Variant.new(false).toBool
+  assert_false v.isValid
+  assert_true v.isNull
 
-    assert !Qt::Boolean.new(true).nil?
-    assert Qt::Boolean.new(false).nil?
+  v = Qt::Variant.new(55)
+  assert_equal v.toInt, 55
+  assert_equal v.toUInt, 55
+  assert_equal v.toLongLong, 55
+  assert_equal v.toULongLong, 55
+  assert_equal Qt::Variant.new(-55).toLongLong, -55
+  # assert_equal Qt::Variant.new(-55).toULongLong, 18446744073709551561
+  assert_equal v.toDouble, 55.0
+  assert_equal v.toChar, Qt::Char.new(55)
+  assert_equal v.toString, "55"
+  assert_equal v.toStringList, [ ]
 
-    # Invalid variant conversion should change b to false
-    b = Qt::Boolean.new(true)
-    v = Qt::Variant.new("Blah")
-    v.toInt(b);
+  assert_equal Qt::Variant.new("Blah").toStringList, [ "Blah" ]
 
-    assert b.nil?
-  end
+  assert_equal Qt::Variant.new(Qt::Size.new(30,40)).toSize,::Size.new(30,40)
+  assert_equal Qt::Variant.new(Qt::SizeF.new(20,30)).toSizeF, Qt::SizeF.new(20,30)
 
-  def test_intp_marshalling
-    assert Qt::Integer.new(100).value == 100
-  end
+  assert_equal Qt::Variant.new(Qt::Rect.new(30,40,10,10)).toRect, Qt::Rect.new(30,40,10,10)
+  assert_equal Qt::Variant.new(Qt::RectF.new(20,30,10,10)).toRectF, Qt::RectF.new(20,30,10,10)
 
-  def test_variant_conversions
-    v = Qt::Variant.new(Qt::Variant::Invalid)
-
-    assert !v.isValid
-    assert v.isNull
-
-    v = Qt::Variant.new(55)
-    assert v.toInt == 55
-    assert v.toUInt == 55
-    assert v.toLongLong == 55
-    assert v.toULongLong == 55
-    assert Qt::Variant.new(-55).toLongLong == -55
-    assert Qt::Variant.new(-55).toULongLong == 18446744073709551561
-    assert v.toDouble == 55.0
-    assert v.toChar == Qt::Char.new(55)
-    assert v.toString == "55"
-    assert v.toStringList == [ ]
-
-
-    assert Qt::Variant.new("Blah").toStringList == [ "Blah" ]
-
-    assert Qt::Variant.new(Qt::Size.new(30,40)).toSize == Qt::Size.new(30,40)
-    assert Qt::Variant.new(Qt::SizeF.new(20,30)).toSizeF == Qt::SizeF.new(20,30)
-
-    assert Qt::Variant.new(Qt::Rect.new(30,40,10,10)).toRect == Qt::Rect.new(30,40,10,10)
-    assert Qt::Variant.new(Qt::RectF.new(20,30,10,10)).toRectF == Qt::RectF.new(20,30,10,10)
-
-    assert Qt::Variant.new(Qt::Point.new(30,40)).toPoint == Qt::Point.new(30,40)
-    assert Qt::Variant.new(Qt::PointF.new(20,30)).toPointF == Qt::PointF.new(20,30)
-
-
-  end
-
+  assert_equal Qt::Variant.new(Qt::Point.new(30,40)).toPoint, Qt::Point.new(30,40)
+  assert_equal Qt::Variant.new(Qt::PointF.new(20,30)).toPointF, Qt::PointF.new(20,30)
 end

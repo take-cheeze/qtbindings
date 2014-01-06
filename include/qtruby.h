@@ -115,7 +115,6 @@ enum QtDebugChannel {
     qtdb_verbose = 0x20
 };
 
-extern "C" {
 #define qt_module(M) mrb_class_get(M, "Qt")
 #define qt_internal_module(M) mrb_class_get_under(M, qt_module(M), "Internal")
 
@@ -126,27 +125,28 @@ extern "C" {
 #define qvariant_class(M) mrb_class_get_under(M, qt_module(M), "Variant")
 #define moduleindex_class(M) mrb_class_get_under(M, qt_internal_module(M), "ModuleIndex")
 
-  mrb_value mrb_call_super(mrb_state* M, mrb_value self, int argc, mrb_value* argv);
+extern "C" {
+  mrb_value mrb_call_super(mrb_state* M, mrb_value self);
 
 extern Q_DECL_EXPORT bool application_terminated;
 extern Q_DECL_EXPORT void set_qtruby_embedded(bool yn);
 }
 
 
-extern Q_DECL_EXPORT Smoke::ModuleIndex _current_method;
+// extern Q_DECL_EXPORT Smoke::ModuleIndex _current_method;
 
 extern Q_DECL_EXPORT QHash<Smoke*, QtRubyModule> qtruby_modules;
 extern Q_DECL_EXPORT QList<Smoke*> smokeList;
 
-extern Q_DECL_EXPORT QHash<QByteArray, Smoke::ModuleIndex *> methcache;
-extern Q_DECL_EXPORT QHash<QByteArray, Smoke::ModuleIndex *> classcache;
+extern Q_DECL_EXPORT QHash<QByteArray, Smoke::ModuleIndex> methcache;
+extern Q_DECL_EXPORT QHash<QByteArray, Smoke::ModuleIndex> classcache;
 // Maps from an int id to classname in the form Qt::Widget
 extern Q_DECL_EXPORT QHash<Smoke::ModuleIndex, QByteArray*> IdToClassNameMap;
 
 extern Q_DECL_EXPORT void install_handlers(TypeHandler *);
 
-extern Q_DECL_EXPORT void smokeruby_mark(void * ptr);
-extern Q_DECL_EXPORT void smokeruby_free(void * ptr);
+extern Q_DECL_EXPORT void smokeruby_mark(mrb_state* M, mrb_value ptr);
+extern Q_DECL_EXPORT void smokeruby_free(mrb_state* M, void * ptr);
 extern Q_DECL_EXPORT mrb_value qchar_to_s(mrb_state* M, mrb_value self);
 
 extern Q_DECL_EXPORT smokeruby_object * alloc_smokeruby_object(mrb_state* M, bool allocated, Smoke * smoke, int classId, void * ptr);
@@ -166,7 +166,7 @@ extern Q_DECL_EXPORT mrb_value findMethod(mrb_state* M, mrb_value self);
 extern Q_DECL_EXPORT mrb_value findAllMethods(mrb_state* M, mrb_value self);
 extern Q_DECL_EXPORT mrb_value findAllMethodNames(mrb_state* M, mrb_value self);
 
-extern Q_DECL_EXPORT QByteArray* find_cached_selector(mrb_state* M, int argc, mrb_value * argv, mrb_value klass, const char * methodName);
+extern Q_DECL_EXPORT Smoke::ModuleIndex find_cached_selector(mrb_state* M, int argc, mrb_value * argv, RClass* klass, const char * methodName, QByteArray& mcid);
 extern Q_DECL_EXPORT mrb_value method_missing(mrb_state* M, mrb_value self);
 extern Q_DECL_EXPORT mrb_value class_method_missing(mrb_state* M, mrb_value klass);
 extern Q_DECL_EXPORT QList<MocArgument*> get_moc_arguments(mrb_state* M, Smoke* smoke, const char * typeName, QList<QByteArray> methodTypes);
@@ -178,7 +178,10 @@ extern Q_DECL_EXPORT mrb_value mapObject(mrb_state* M, mrb_value self, mrb_value
 extern Q_DECL_EXPORT mrb_value qobject_metaobject(mrb_state* M, mrb_value self);
 extern Q_DECL_EXPORT mrb_value set_obj_info(mrb_state* M, const char * className, smokeruby_object * o);
 extern Q_DECL_EXPORT mrb_value kross2smoke(mrb_state* M, mrb_value self);
-extern Q_DECL_EXPORT const char* value_to_type_flag(mrb_state* M, mrb_value ruby_value);
+extern Q_DECL_EXPORT const char* value_to_type_flag(mrb_state* M, mrb_value const& ruby_value);
 extern Q_DECL_EXPORT mrb_value prettyPrintMethod(mrb_state* M, Smoke::Index id);
+
+extern Q_DECL_EXPORT Smoke::ModuleIndex
+do_method_missing(mrb_state* M, char const* pkg, std::string method, RClass* cls, int argc, mrb_value const* argv);
 
 #endif

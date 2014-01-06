@@ -2471,7 +2471,7 @@ module Qt
 
   module Internal
     @@classes   = {}
-    @@cpp_names = {}
+    CppNames = {}
     @@idclass   = []
 
     @@normalize_procs = []
@@ -2494,10 +2494,6 @@ module Qt
 
     def self.classes
       return @@classes
-    end
-
-    def self.cpp_names
-      return @@cpp_names
     end
 
     def self.idclass
@@ -2526,264 +2522,19 @@ module Qt
       classId = Qt::Internal.findClass(c)
       insert_pclassid(classname, classId)
       @@idclass[classId.index] = classname
-      cpp_names[classname] = c
+      CppNames[classname] = c
       klass = isQObject(c) ? create_qobject_class(classname, Qt) \
                                                    : create_qt_class(classname, Qt)
       @@classes[classname] = klass unless klass.nil?
+      klass.const_set :QtClassName, c
     end
 
     def Internal.debug_level
       Qt.debug_level
     end
 
-=begin
-    def Internal.checkarg(argtype, typename)
-      const_point = typename =~ /^const\s+/ ? -1 : 0
-      if argtype == 'i'
-        if typename =~ /^int&?$|^signed int&?$|^signed$|^qint32&?$/
-          return 6 + const_point
-        elsif typename =~ /^quint32&?$/
-          return 4 + const_point
-        elsif typename =~ /^(?:short|ushort|unsigned short int|unsigned short|uchar|char|unsigned char|uint|long|ulong|unsigned long int|unsigned|float|double|WId|HBITMAP__\*|HDC__\*|HFONT__\*|HICON__\*|HINSTANCE__\*|HPALETTE__\*|HRGN__\*|HWND__\*|Q_PID|^quint16&?$|^qint16&?$)$/
-          return 4 + const_point
-        elsif typename =~ /^(quint|qint|qulong|qlong|qreal)/
-          return 4 + const_point
-        else
-          t = typename.sub(/^const\s+/, '')
-          t.sub!(/[&*]$/, '')
-          if isEnum(t)
-            return 2
-          end
-        end
-      elsif argtype == 'n'
-        if typename =~ /^double$|^qreal$/
-          return 6 + const_point
-        elsif typename =~ /^float$/
-          return 4 + const_point
-        elsif typename =~ /^int&?$/
-          return 2 + const_point
-        elsif typename =~ /^(?:short|ushort|uint|long|ulong|signed|unsigned|float|double)$/
-          return 2 + const_point
-        else
-          t = typename.sub(/^const\s+/, '')
-          t.sub!(/[&*]$/, '')
-          if isEnum(t)
-            return 2 + const_point
-          end
-        end
-      elsif argtype == 'B'
-        if typename =~ /^(?:bool)[*&]?$/
-          return 2 + const_point
-        end
-      elsif argtype == 's'
-        if typename =~ /^(const )?((QChar)[*&]?)$/
-          return 6 + const_point
-        elsif typename =~ /^(?:(u(nsigned )?)?char\*)$/
-          return 4 + const_point
-        elsif typename =~ /^(?:const (u(nsigned )?)?char\*)$/
-          return 2 + const_point
-        elsif typename =~ /^(?:(?:const )?(QString)[*&]?)$/
-          return 8 + const_point
-        end
-      elsif argtype == 'a'
-        # FIXME: shouldn't be hardcoded. Installed handlers should tell what ruby type they expect.
-        if typename =~ /^(?:
-            const\ QCOORD\*|
-            (?:const\ )?
-            (?:
-                QStringList[\*&]?|
-                QValueList<int>[\*&]?|
-                QRgb\*|
-                char\*\*
-            )
-                  )$/x
-          return 2 + const_point
-        end
-      elsif argtype == 'u'
-        # Give nil matched against string types a higher score than anything else
-        if typename =~ /^(?:u?char\*|const u?char\*|(?:const )?((Q(C?)String))[*&]?)$/
-          return 4 + const_point
-        # Numerics will give a runtime conversion error, so they fail the match
-        elsif typename =~ /^(?:short|ushort|uint|long|ulong|signed|unsigned|int)$/
-          return -99
-        else
-          return 2 + const_point
-        end
-      elsif argtype == 'U'
-        if typename =~ /QStringList/
-          return 4 + const_point
-        else
-          return 2 + const_point
-        end
-      else
-        t = typename.sub(/^const\s+/, '')
-        t.sub!(/(::)?Ptr$/, '')
-        t.sub!(/[&*]$/, '')
-        if argtype == t
-          return 4 + const_point
-        elsif classIsa(argtype, t)
-          return 2 + const_point
-        elsif isEnum(argtype) and
-            (t =~ /int|qint32|uint|quint32|long|ulong/ or isEnum(t))
-          return 2 + const_point
-        end
-      end
-      return -99
-    end
-=end
-
     def Internal.find_class(classname)
       @@classes[classname]
-    end
-
-    # Looks up and executes a Qt method
-    #
-    # package - Always the string 'Qt'
-    # method  - Methodname as a string
-    # klass   - Ruby class object
-    # this    - instance of class
-    # args    - arguments to method call
-    #
-    def Internal.do_method_missing(package, method, klass, this, *args)
-      # Determine class name
-      if klass.class == Module
-        # If a module use the module's name - typically Qt
-        classname = klass.name
-      else
-        # Lookup Qt class name from Ruby class name
-        classname = cpp_names[klass.name]
-        if classname.nil?
-          # Make sure we haven't backed all the way up to Object
-          if klass != Object and klass != Qt
-            # Don't recognize this class so try the superclass
-            return do_method_missing(package, method, klass.superclass, this, *args)
-          else
-            # Give up if we back all the way up to Object
-            return nil
-          end
-        end
-      end
-
-      # Modify constructor method name from new to the name of the Qt class
-      # and remove any namespacing
-      if method == "new"
-        method = classname.dup
-        method.gsub!(/^.*::/,"")
-      end
-
-      # If the method contains no letters it must be an operator, append "operator" to the
-      # method name
-      method = "operator" + method.sub("@","") if /[a-zA-Z]+/.match method
-
-      # Change foobar= to setFoobar()
-      method = 'set' + method[0,1].upcase + method[1,method.length].sub("=", "") if method =~ /.*[^-+%\/|=]=$/ && method != 'operator='
-
-      # Build list of munged method names which is the methodname followed
-      # by symbols that indicate the basic type of the method's arguments
-      #
-      # Plain scalar = $
-      # Object = #
-      # Non-scalar (reference to array or hash, undef) = ?
-      #
-      methods = []
-      methods << method.dup
-      args.each do |arg|
-        if arg.nil?
-          # For each nil arg encountered, triple the number of munged method
-          # templates, in order to cover all possible types that can match nil
-          temp = []
-          methods.collect! do |meth|
-            temp << meth + '?'
-            temp << meth + '#'
-            meth << '$'
-          end
-          methods.concat(temp)
-        elsif isObject(arg)
-          methods.collect! { |meth| meth << '#' }
-        elsif arg.kind_of? Array or arg.kind_of? Hash
-          methods.collect! { |meth| meth << '?' }
-        else
-          methods.collect! { |meth| meth << '$' }
-        end
-      end
-
-      # Create list of methodIds that match classname and munged method name
-      methodIds = []
-      methods.collect { |meth| methodIds.concat( findMethod(classname, meth) ) }
-
-      # If we didn't find any methods and the method name contains an underscore
-      # then convert to camelcase and try again
-      if method =~ /._./ && methodIds.length == 0
-        # If the method name contains underscores, convert to camel case
-        # form and try again
-        method.gsub!(/(.)_(.)/) {$1 + $2.upcase}
-        return do_method_missing(package, method, klass, this, *args)
-      end
-
-      # Debugging output for method lookup
-      if debug_level >= DebugLevel::High
-        puts "Searching for #{classname}##{method}"
-        puts "Munged method names:"
-        methods.each {|meth| puts "        #{meth}"}
-        puts "candidate list:"
-        prototypes = dumpCandidates(methodIds).split("\n")
-        line_len = (prototypes.collect { |p| p.length }).max
-        prototypes.zip(methodIds) {
-          |prototype,id| puts "#{prototype.ljust line_len}  (smoke: #{id.smoke} index: #{id.index})"
-        }
-      end
-
-      # Find the best match
-      chosen = nil
-      if methodIds.length > 0
-        best_match = -1
-        methodIds.each do
-          |id|
-          puts "matching => smoke: #{id.smoke} index: #{id.index}" if debug_level >= Qt::DebugLevel::High
-          current_match = (isConstMethod(id) ? 1 : 0)
-          (0...args.length).each do
-            |i|
-            typename = get_arg_type_name(id, i)
-            argtype = get_value_type(args[i])
-            score = checkarg(argtype, typename)
-            current_match += score
-            puts "        #{typename} (#{argtype}) score: #{score}" if debug_level >= Qt::DebugLevel::High
-          end
-
-          # Note that if current_match > best_match, then chosen must be nil
-          if current_match > best_match
-            best_match = current_match
-            chosen = id
-          # Ties are bad - but it is better to chose something than to fail
-          elsif current_match == best_match && id.smoke == chosen.smoke
-            puts " ****** warning: multiple methods with the same score of #{current_match}: #{chosen.index} and #{id.index}" if debug_level >= Qt::DebugLevel::Minimal
-            chosen = id
-          end
-          puts "        match => smoke: #{id.smoke} index: #{id.index} score: #{current_match} chosen: #{chosen ? chosen.index : nil}" if debug_level >= Qt::DebugLevel::High
-        end
-      end
-
-      # Additional debugging output
-      if debug_level >= DebugLevel::Minimal && chosen.nil? && method !~ /^operator/
-        id = find_pclassid(normalize_classname(klass.name))
-        hash = findAllMethods(id)
-        constructor_names = nil
-        if method == classname
-          puts "No matching constructor found, possibles:\n"
-          constructor_names = hash.keys.grep(/^#{classname}/)
-        else
-          puts "Possible prototypes:"
-          constructor_names = hash.keys
-        end
-        method_ids = hash.values_at(*constructor_names).flatten
-        puts dumpCandidates(method_ids)
-      else
-        puts "setCurrentMethod(smokeList index: #{chosen.smoke}, meth index: #{chosen.index})" if debug_level >= DebugLevel::High && chosen
-      end
-
-      # Select the chosen method
-      setCurrentMethod(chosen) if chosen
-      return nil
     end
 
     @@classes['Qt::Integer'] = Qt::Integer
@@ -2901,7 +2652,7 @@ module Qt
       end
 
       parentMeta = nil
-      if cpp_names[klass.superclass.name].nil?
+      if CppNames[klass.superclass.name].nil?
         parentMeta = getMetaObject(klass.superclass, qobject)
       end
 
@@ -3176,7 +2927,8 @@ module Qt
     getClassList.each do |c|
       if c == "Qt"
         # Don't change Qt to Qt::t, just leave as is
-        cpp_names["Qt"] = c
+        CppNames["Qt"] = c
+        ::Qt.const_set :QtClassName, "QGlobalSpace"
       elsif c != "QInternal" && !c.empty?
         Qt::Internal::init_class(c)
       end

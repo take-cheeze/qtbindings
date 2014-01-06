@@ -110,7 +110,7 @@ void marshall_from_ruby<SmokeClassWrapper>(Marshall *m)
 	if (!m->cleanup() && m->type().isStack()) {
 		ptr = construct_copy(o);
 		if (do_debug & qtdb_gc) {
-			qWarning("copying %s %p to %p\n", resolve_classname(o), o->ptr, ptr);
+			qWarning("copying %s %p to %p", resolve_classname(o), o->ptr, ptr);
 		}
 	}
 
@@ -157,7 +157,7 @@ void marshall_to_ruby<SmokeClassWrapper>(Marshall *m)
 	if (m->type().isConst() && m->type().isRef()) {
 		p = construct_copy( o );
 		if (do_debug & qtdb_gc) {
-			qWarning("copying %s %p to %p\n", classname, o->ptr, p);
+			qWarning("copying %s %p to %p", classname, o->ptr, p);
 		}
 
 		if (p) {
@@ -168,7 +168,7 @@ void marshall_to_ruby<SmokeClassWrapper>(Marshall *m)
 		
 	obj = set_obj_info(m->M, classname, o);
 	if (do_debug & qtdb_gc) {
-		qWarning("allocating %s %p -> %s\n", classname, o->ptr, mrb_string_value_ptr(m->M, obj));
+		qWarning("allocating %s %p -> %s", classname, o->ptr, mrb_string_value_ptr(m->M, obj));
 	}
 
 /*

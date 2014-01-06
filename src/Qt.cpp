@@ -15,11 +15,11 @@
  *                                                                         *
  ***************************************************************************/
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#include <stdio.h>
-#include <stdarg.h>
+#include <cstdio>
+#include <cstdarg>
+
+#include <regex>
+#include <string>
 
 #include <iostream>
 
@@ -52,23 +52,13 @@
 #include <QtDBus/qdbusargument.h>
 #endif
 
-#undef DEBUG
-#ifndef __USE_POSIX
-#define __USE_POSIX
-#endif
-#ifndef __USE_XOPEN
-#define __USE_XOPEN
-#endif
-#ifdef _BOOL
-#define HAS_BOOL
-#endif
-
 #include <mruby.h>
 #include <mruby/string.h>
 #include <mruby/array.h>
 #include <mruby/hash.h>
 #include <mruby/class.h>
 #include <mruby/data.h>
+#include <mruby/variable.h>
 
 #include <smoke.h>
 #include <smoke/qtcore_smoke.h>
@@ -78,7 +68,6 @@
 #include "smokeruby.h"
 #include "smoke.h"
 #include "marshall_types.h"
-// #define DEBUG
 
 extern "C" {
 bool application_terminated = false;
@@ -88,7 +77,7 @@ QList<Smoke*> smokeList;
 QHash<Smoke*, QtRubyModule> qtruby_modules;
 
 #ifdef DEBUG
-int do_debug = qtdb_gc;
+int do_debug = 0; // -1;
 #else
 int do_debug = qtdb_none;
 #endif
@@ -98,16 +87,14 @@ static QMutex pointer_map_mutex;
 Q_GLOBAL_STATIC(PointerMap, pointer_map)
 int object_count = 0;
 
-// FIXME:
-// Don't the two following hashs create memory leaks by using pointers to Smoke::(Module)Index ?
-QHash<QByteArray, Smoke::ModuleIndex *> methcache;
-QHash<QByteArray, Smoke::ModuleIndex *> classcache;
+QHash<QByteArray, Smoke::ModuleIndex> methcache;
+QHash<QByteArray, Smoke::ModuleIndex> classcache;
 
 QHash<Smoke::ModuleIndex, QByteArray*> IdToClassNameMap;
 
 #define logger logger_backend
 
-Smoke::ModuleIndex _current_method;
+// Smoke::ModuleIndex _current_method;
 
 smokeruby_object *
 alloc_smokeruby_object(mrb_state* M, bool allocated, Smoke * smoke, int classId, void * ptr)
@@ -130,20 +117,15 @@ free_smokeruby_object(mrb_state* M, smokeruby_object* o)
 	return;
 }
 
-void
-free_smokeruby_object(mrb_state* M, void* p)
-{
-  smokeruby_object* o = reinterpret_cast<smokeruby_object*>(p);
-  free_smokeruby_object(M, o);
-}
-
 mrb_data_type const smokeruby_type = {
-  "smokeruby_object", &free_smokeruby_object };
+  "smokeruby_object", &smokeruby_free };
 
 smokeruby_object *value_obj_info(mrb_state* M, mrb_value ruby_value) {  // ptr on success, null on fail
 	if (mrb_type(ruby_value) != MRB_TT_DATA) {
 		return 0;
 	}
+
+  if(DATA_TYPE(ruby_value) != &smokeruby_type) { return NULL; }
 
     smokeruby_object * o = 0;
     Data_Get_Struct(M, ruby_value, &smokeruby_type, o);
@@ -172,11 +154,13 @@ SmokeValue getSmokeValue(mrb_state* M, void *ptr) {
       pointer_map_mutex.unlock();
 	    return SmokeValue();
 	} else {
+    SmokeValue const& ret = pointer_map()->operator[](ptr);
 		if (do_debug & qtdb_gc) {
-			qWarning("getPointerObject %p -> %s", ptr, mrb_string_value_ptr(M, pointer_map()->operator[](ptr).value));
+      PROTECT_SCOPE();
+			qWarning("getPointerObject %p -> %s", ptr, mrb_string_value_ptr(M, ret.value));
 		}
     pointer_map_mutex.unlock();
-		return pointer_map()->operator[](ptr);
+		return ret;
 	}
 }
 
@@ -224,9 +208,12 @@ void unmapPointer(smokeruby_object *o, Smoke::Index classId, void *lastptr) {
 void mapPointer(mrb_state* M, mrb_value obj, smokeruby_object* o, void *ptr, Smoke *smoke, Smoke::Index fromClassId, Smoke::Index toClassId, void *lastptr) {
   pointer_map_mutex.unlock();
 
+  assert(mrb_type(obj) == MRB_TT_DATA);
+  assert(DATA_TYPE(obj) == &smokeruby_type);
+
 	ptr = smoke->cast(ptr, fromClassId, toClassId);
 
-    if (ptr != lastptr) {
+  if (ptr != lastptr) {
 		lastptr = ptr;
 
 		if (do_debug & qtdb_gc) {
@@ -234,9 +221,8 @@ void mapPointer(mrb_state* M, mrb_value obj, smokeruby_object* o, void *ptr, Smo
 			qWarning("mapPointer (%s*)%p -> %s size: %d", className, ptr, mrb_string_value_ptr(M, obj), pointer_map()->size() + 1);
 		}
 
-        SmokeValue value(obj, o);
-		pointer_map()->insert(ptr, value);
-    }
+    pointer_map()->insert(ptr, SmokeValue(obj, o));
+  }
 
 	if (smoke->classes[toClassId].external) {
 		// encountered external class
@@ -316,26 +302,12 @@ Binding::callMethod(Smoke::Index method, void *ptr, Smoke::Stack args, bool /*is
 		methodName += (sizeof("operator") - 1);
 	}
 
-  /*
-  // If not in a ruby thread, just call the C++ version
-	// During GC, avoid checking for override and just call the C++ version
-  // If the virtual method hasn't been overriden, just call the C++ one.
-#ifdef HAVE_RUBY_RUBY_H
-  int ruby_thread = ruby_native_thread_p();
-	if ((ruby_thread == 0) || mrb_during_gc() || mrb_respond_to(obj, mrb_intern(methodName)) == 0) {
-    return false;
-	}
-#else
-  if (rb_during_gc() || ruby_stack_check() || mrb_respond_to(obj, mrb_intern(methodName)) == 0) {
-    return false;
-  }
-#endif
-  */
-  if (mrb_respond_to(M, obj, mrb_intern_cstr(M, methodName)) == 0) {
+  if (not mrb_respond_to(M, obj, mrb_intern_cstr(M, methodName))) {
     return false;
   }
 
-	QtRuby::VirtualMethodCall c(M, smoke, method, args, obj, (mrb_value*)mrb_malloc(M, sizeof(mrb_value) * smoke->methods[method].numArgs));
+  std::vector<mrb_value> sp(smoke->methods[method].numArgs, mrb_nil_value());
+	QtRuby::VirtualMethodCall c(M, smoke, method, args, obj, sp.data());
 	c.next();
 	return true;
 }
@@ -552,78 +524,6 @@ resolve_classname(smokeruby_object * o)
 }
 
 mrb_value
-findMethod(mrb_state* M, mrb_value /*self*/)
-{
-  mrb_value c_value, name_value;
-  mrb_get_args(M, "oo", &c_value, &name_value);
-    char *c = mrb_string_value_ptr(M, c_value);
-    char *name = mrb_string_value_ptr(M, name_value);
-    mrb_value result = mrb_ary_new(M);
-    Smoke::ModuleIndex classId = Smoke::findClass(c);
-    Smoke::ModuleIndex meth = Smoke::NullModuleIndex;
-    QList<Smoke::ModuleIndex> milist;
-    if (classId.smoke != 0) {
-        meth = classId.smoke->findMethod(c, name);
-    }
-#ifdef DEBUG
-    if (do_debug & qtdb_calls) qWarning("Found method %s::%s => %d", c, name, meth.index);
-#endif
-    if(!meth.index) {
-        // since every smoke module defines a class 'QGlobalSpace' we can't rely on the classMap,
-        // so we search for methods by hand
-        foreach (Smoke* s, smokeList) {
-            Smoke::ModuleIndex cid = s->idClass("QGlobalSpace");
-            Smoke::ModuleIndex mnid = s->idMethodName(name);
-            if (!cid.index || !mnid.index) continue;
-            meth = s->idMethod(cid.index, mnid.index);
-            if (meth.index) milist.append(meth);
-        }
-#ifdef DEBUG
-        if (do_debug & qtdb_calls) qWarning("Found method QGlobalSpace::%s => %d", name, meth.index);
-#endif
-    }
-    else
-    {
-        milist.append(meth);
-    }
-
-    if (milist.count() == 0) {
-        return result;
-    // empty list
-    } else {
-        foreach (Smoke::ModuleIndex meth, milist) {
-            if (meth.index > 0) {
-                Smoke::Index i = meth.smoke->methodMaps[meth.index].method;
-                if (i == 0) {		// shouldn't happen
-                  mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Corrupt method %S::%S", mrb_str_new_cstr(M, c), mrb_str_new_cstr(M, name));
-                } else if(i > 0) {	// single match
-                    const Smoke::Method &methodRef = meth.smoke->methods[i];
-                    if ((methodRef.flags & Smoke::mf_internal) == 0) {
-                      mrb_ary_push(M, result, mrb_funcall(M, mrb_obj_value(moduleindex_class(M)), "new", 2, mrb_fixnum_value(smokeList.indexOf(meth.smoke)), mrb_fixnum_value(i)));
-                    }
-                } else {		// multiple match
-                    i = -i;		// turn into ambiguousMethodList index
-                    while (meth.smoke->ambiguousMethodList[i]) {
-                        const Smoke::Method &methodRef = meth.smoke->methods[meth.smoke->ambiguousMethodList[i]];
-                        if ((methodRef.flags & Smoke::mf_internal) == 0) {
-                          mrb_ary_push(M, result, mrb_funcall(M, mrb_obj_value(moduleindex_class(M)), "new", 2, mrb_fixnum_value(smokeList.indexOf(meth.smoke)), mrb_fixnum_value(meth.smoke->ambiguousMethodList[i])));
-//#ifdef DEBUG
-                            if (do_debug & qtdb_calls) qWarning("Ambiguous Method %s::%s => %d", c, name, meth.smoke->ambiguousMethodList[i]);
-//#endif
-
-                        }
-                        i++;
-                    }
-	        }
-            }
-        }
-    }
-    return result;
-}
-
-// findAllMethods(ModuleIndex [, startingWith]) : returns { "mungedName" => [index in methods, ...], ... }
-
-mrb_value
 findAllMethods(mrb_state* M, mrb_value /*self*/)
 {
   mrb_value* argv; int argc;
@@ -639,9 +539,9 @@ findAllMethods(mrb_state* M, mrb_value /*self*/)
         char * pat = 0L;
         if(argc > 1 && mrb_type(argv[1]) == MRB_TT_STRING)
           pat = mrb_string_value_ptr(M, argv[1]);
-#ifdef DEBUG
+
         if (do_debug & qtdb_calls) qWarning("findAllMethods called with classid = %d, pat == %s", c, pat);
-#endif
+
         Smoke::Index imax = smoke->numMethodMaps;
         Smoke::Index imin = 0, icur = -1, methmin, methmax;
         methmin = -1; methmax = -1; // kill warnings
@@ -796,262 +696,480 @@ findAllMethodNames(mrb_state* M, mrb_value /*self*/)
     return result;
 }
 
-QByteArray *
-find_cached_selector(mrb_state* M, int argc, mrb_value * argv, mrb_value klass, const char * methodName)
+Smoke::ModuleIndex
+find_cached_selector(mrb_state* M, int argc, mrb_value * argv, RClass* klass, const char * methodName, QByteArray& mcid)
 {
-    // Look in the cache
-static QByteArray * mcid = 0;
-	if (mcid == 0) {
-		mcid = new QByteArray();
-	}
-
-*mcid = mrb_obj_classname(M, klass);
-	*mcid += ';';
-	*mcid += methodName;
-	for(int i=4; i<argc ; i++)
+  mcid = mrb_string_value_ptr(M ,mrb_mod_cv_get(M, klass, mrb_intern_lit(M, "QtClassName"))); // mrb_obj_classname(M, klass);
+	mcid += ';';
+	mcid += methodName;
+	for(int i=0; i<argc ; i++)
 	{
-		*mcid += ';';
-*mcid += value_to_type_flag(M, argv[i]);
-	}
-	Smoke::ModuleIndex *rcid = methcache.value(*mcid);
-#ifdef DEBUG
-	if (do_debug & qtdb_calls) qWarning("method_missing mcid: %s", (const char *) *mcid);
-#endif
-
-	if (rcid) {
-		// Got a hit
-#ifdef DEBUG
-		if (do_debug & qtdb_calls) qWarning("method_missing cache hit, mcid: %s", (const char *) *mcid);
-#endif
-		_current_method.smoke = rcid->smoke;
-		_current_method.index = rcid->index;
-	} else {
-		_current_method.smoke = 0;
-		_current_method.index = -1;
+		mcid += ';';
+    mcid += value_to_type_flag(M, argv[i]);
 	}
 
-	return mcid;
+	Smoke::ModuleIndex const& rcid = methcache.value(mcid);
+	if (do_debug & qtdb_calls) qWarning("method_missing mcid: %s", mcid.constData());
+	if (do_debug & qtdb_calls && rcid != Smoke::NullModuleIndex) { // Got a hit
+		qWarning("method_missing cache hit, mcid: %s", mcid.constData());
+	}
+  return rcid;
 }
 
-mrb_value
-method_missing(mrb_state* M, int argc, mrb_value* argv, mrb_value self)
+
+static bool
+isEnum(char const* enumName)
 {
-const char * methodName = mrb_sym2name(M, mrb_symbol(argv[0]));
-mrb_value klass = mrb_funcall(M, self, "class", 0);
+    Smoke::Index typeId = 0;
+    Smoke* s = 0;
+    for (int i = 0; i < smokeList.count(); i++) {
+         typeId = smokeList[i]->idType(enumName);
+         if (typeId > 0) {
+             s = smokeList[i];
+             break;
+         }
+    }
+    return	typeId > 0
+			&& (	(s->types[typeId].flags & Smoke::tf_elem) == Smoke::t_enum
+					|| (s->types[typeId].flags & Smoke::tf_elem) == Smoke::t_ulong
+					|| (s->types[typeId].flags & Smoke::tf_elem) == Smoke::t_long
+					|| (s->types[typeId].flags & Smoke::tf_elem) == Smoke::t_uint
+            || (s->types[typeId].flags & Smoke::tf_elem) == Smoke::t_int );
+}
 
-    mrb_value retval = mrb_nil_value();
+static int
+checkarg(char const* argtype, char const* type_name) {
+  typedef std::regex r;
 
-	// Look for 'thing?' methods, and try to match isThing() or hasThing() in the Smoke runtime
-static QByteArray * pred = 0;
-	if (pred == 0) {
-		pred = new QByteArray();
-	}
+  static r const is_const_reg("^const\\s+"), remove_qualifier("^(?:const )?([^*&]+)[&*]?$");
+  int const const_point = std::regex_match(type_name, is_const_reg)? -1 : 0;
 
-	*pred = methodName;
-	if (pred->endsWith("?")) {
-		smokeruby_object *o = value_obj_info(M, self);
-		if(!o || !o->ptr) {
-      return mrb_nil_value(); // TODO: mrb_call_super(argc, argv);
-		}
+  if(std::strlen(argtype) == 1) {
+    switch(argtype[0]) {
+      case 'i': {
+        if(std::regex_match(type_name, r("^(?:int|signed int|signed|qint32)&?$")))
+        { return 6 + const_point; }
+        if(std::regex_match(type_name, r("^quint32&?$"))
+           or std::regex_match(type_name, r("^(?:short|ushort|unsigned short int|unsigned short|uchar|char|unsigned char|uint|long|ulong|unsigned long int|unsigned|float|double|WId|HBITMAP__\\*|HDC__\\*|HFONT__\\*|HICON__\\*|HINSTANCE__\\*|HPALETTE__\\*|HRGN__\\*|HWND__\\*|Q_PID|^quint16&?$|^qint16&?$)$"))
+           or std::regex_match(type_name, r("^(quint|qint|qulong|qlong|qreal)")))
+        { return 4 + const_point; }
 
-		// Drop the trailing '?'
-		pred->replace(pred->length() - 1, 1, "");
+        if(isEnum(std::regex_replace(type_name, remove_qualifier, "$1").c_str()))
+        { return 2; }
+      } break;
 
-		pred->replace(0, 1, pred->mid(0, 1).toUpper());
-		pred->replace(0, 0, "is");
-		Smoke::ModuleIndex meth = o->smoke->findMethod(o->smoke->classes[o->classId].className, (const char *) *pred);
+      case 'n': {
+        if(std::regex_match(type_name, r("^(?:double|qreal)$")))
+        { return 6 + const_point; }
+        if(std::regex_match(type_name, r("^float$")))
+        { return 4 + const_point; }
+        if(std::regex_match(type_name, r("^double$|^qreal$"))
+           or std::regex_match(type_name, r("^(?:short|ushort|uint|long|ulong|signed|unsigned|float|double)$")))
+        { return 2 + const_point; }
 
-		if (meth.index == 0) {
-			pred->replace(0, 2, "has");
-			meth = o->smoke->findMethod(o->smoke->classes[o->classId].className, *pred);
-		}
+        if(isEnum(std::regex_replace(type_name, remove_qualifier, "$1").c_str()))
+        { return 2 + const_point; }
+      } break;
 
-		if (meth.index > 0) {
-			methodName = (char *) (const char *) *pred;
-		}
-	}
+      case 'B': {
+        if(std::regex_match(type_name, r("^(?:bool)[*&]?$")))
+        { return 2 + const_point; }
+      } break;
 
-    mrb_value * temp_stack = (mrb_value*)mrb_malloc(M, sizeof(mrb_value) * (argc+3));
-    temp_stack[0] = mrb_str_new_cstr(M, "Qt");
-    temp_stack[1] = mrb_str_new_cstr(M, methodName);
-    temp_stack[2] = klass;
-    temp_stack[3] = self;
-    for (int count = 1; count < argc; count++) {
-		temp_stack[count+3] = argv[count];
+      case 's': {
+        if(std::regex_match(type_name, r("^(?:(?:const )?(QString)[*&]?)$")))
+        { return 8 + const_point; }
+        if(std::regex_match(type_name, r("^(const )?((QChar)[*&]?)$")))
+        { return 6 + const_point; }
+        if(std::regex_match(type_name, r("^(?:(u(nsigned )?)?char\\*)$")))
+        { return 4 + const_point; }
+        if(std::regex_match(type_name, r("^(?:const (u(nsigned )?)?char\\*)$")))
+        { return 2 + const_point; }
+      } break;
+
+      case 'a': {
+        if(std::regex_match(type_name, r("^(?:const QCOORD\\*|(?:const )?(?:QStringList[\\*&]?|QValueList<int>[\\*&]?|QRgb\\*|char\\*\\*))$)")))
+        { return 2 + const_point; }
+      } break;
+
+      case 'u': {
+        if(std::regex_match(type_name, r("^(?:u?char\\*|const u?char\\*|(?:const )?((Q(C?)String))[*&]?)$")))
+        { return 4 + const_point; }
+        if(std::regex_match(type_name, r("^(?:short|ushort|uint|long|ulong|signed|unsigned|int)$")))
+        { return -99; }
+        else
+        { return 2 + const_point; }
+      } break;
+
+      case 'U': {
+        return std::regex_match(type_name, r("QStringList"))? 4 + const_point : 2 + const_point;
+      } break;
+    }
+  }
+
+  std::string const t = std::regex_replace(std::regex_replace(type_name, remove_qualifier, "$1"), r("(::)?Ptr$"), "");
+  if(argtype == t) { return 4 + const_point; }
+  if(Smoke::isDerivedFrom(argtype, t.c_str()))
+  { return 2 + const_point; }
+  if(isEnum(argtype) and (std::regex_match(t, r("int|qint32|uint|quint32|long|ulong")) or isEnum(t.c_str())))
+  { return 2 + const_point; }
+
+  return -99;
+}
+
+Smoke::ModuleIndex
+do_method_missing(mrb_state* M, char const* pkg, std::string method, RClass* cls, int argc, mrb_value const* argv) {
+  mrb_value cpp_name_value = cls == mrb_class_get(M, "Qt")
+                             ? mrb_str_new_cstr(M, "Qt")
+                             : mrb_mod_cv_get(M, cls, mrb_intern_lit(M, "QtClassName"));
+  if(mrb_nil_p(cpp_name_value)) { return Smoke::ModuleIndex(); }
+  std::string cpp_name = mrb_string_value_ptr(M, cpp_name_value);
+
+  // Modify constructor method name from new to the name of the Qt class
+  // and remove any namespacing
+  if(method == "new") {
+    method = std::regex_replace(cpp_name, std::regex("^.*::"), "");
+  }
+
+  // If the method contains no letters it must be an operator, append "operator" to the
+  // method name
+  if(not std::regex_match(method, std::regex("^\\w+$"))) {
+    method = "operator" + method;
+  }
+
+  // Change foobar= to setFoobar()
+  if(method != "operator=" and std::regex_match(method, std::regex(".*[^-+%\\/|=]=$"))) {
+    method = std::string("set").append(1, std::toupper(method[0])).append(method.begin() + 1, method.end());
+  }
+
+  // Build list of munged method names which is the methodname followed
+  // by symbols that indicate the basic type of the method's arguments
+  //
+  // Plain scalar = $
+  // Object = #
+  // Non-scalar (reference to array or hash, undef) = ?
+  std::vector<std::string> methods = { method };
+  for(mrb_value const* arg = argv; arg < (argv + argc); ++arg) {
+    if(mrb_nil_p(*arg)) {
+      std::vector<std::string> temp;
+      for(std::string& meth : methods) {
+        temp.push_back(meth + '?');
+        temp.push_back(meth + '#');
+        meth += '$';
+      }
+      methods.insert(methods.end(), temp.begin(), temp.end());
+    } else if(value_to_ptr(M, *arg)) {
+      for(auto& meth : methods) { meth += '#'; }
+    } else if(mrb_array_p(*arg) or mrb_hash_p(*arg)) {
+      for(auto& meth : methods) { meth += '?'; }
+    } else {
+      for(auto& meth : methods) { meth += '$'; }
+    }
+  }
+
+  // Create list of methodIds that match classname and munged method name
+  std::vector<Smoke::ModuleIndex> methodIds;
+  for(auto const& meth_name : methods) {
+    Smoke::ModuleIndex classId = Smoke::findClass(cpp_name.c_str());
+    Smoke::ModuleIndex meth = Smoke::NullModuleIndex;
+    QList<Smoke::ModuleIndex> milist;
+    if (classId.smoke != 0) {
+      meth = classId.smoke->findMethod(cpp_name.c_str(), meth_name.c_str());
     }
 
-	{
-		QByteArray * mcid = find_cached_selector(M, argc+3, temp_stack, klass, methodName);
+    if (do_debug & qtdb_calls && meth != Smoke::NullModuleIndex) qWarning("Found method %s::%s => %d", cpp_name.c_str(), meth_name.c_str(), meth.index);
 
-		if (_current_method.index == -1) {
-			// Find the C++ method to call. Do that from Ruby for now
+    if(meth == Smoke::NullModuleIndex) {
+      // since every smoke module defines a class 'QGlobalSpace' we can't rely on the classMap,
+      // so we search for methods by hand
+      foreach (Smoke* s, smokeList) {
+        Smoke::ModuleIndex cid = s->idClass("QGlobalSpace");
+        Smoke::ModuleIndex mnid = s->idMethodName(meth_name.c_str());
+        if (!cid.index || !mnid.index) continue;
+        meth = s->idMethod(cid.index, mnid.index);
+        if (meth != Smoke::NullModuleIndex) milist.append(meth);
+      }
 
-			retval = mrb_funcall_argv(M, mrb_obj_value(qt_internal_module(M)), mrb_intern_lit(M, "do_method_missing"), argc+3, temp_stack);
-			if (_current_method.index == -1) {
-				const char * op = mrb_sym2name(M, mrb_symbol(argv[0]));
-				if (	qstrcmp(op, "-") == 0
-						|| qstrcmp(op, "+") == 0
-						|| qstrcmp(op, "/") == 0
-						|| qstrcmp(op, "%") == 0
-						|| qstrcmp(op, "|") == 0 )
-				{
-					// Look for operator methods of the form 'operator+=', 'operator-=' and so on..
-					char op1[3];
-					op1[0] = op[0];
-					op1[1] = '=';
-					op1[2] = '\0';
-					temp_stack[1] = mrb_str_new_cstr(M, op1);
-					retval = mrb_funcall_argv(M, mrb_obj_value(qt_internal_module(M)), mrb_intern_lit(M, "do_method_missing"), argc+3, temp_stack);
-				}
+      if (do_debug & qtdb_calls && meth != Smoke::NullModuleIndex) qWarning("Found method QGlobalSpace::%s => %d", meth_name.c_str(), meth.index);
+    } else {
+      milist.append(meth);
+    }
 
-				if (_current_method.index == -1) {
-					// Check for property getter/setter calls, and for slots in QObject classes
-					// not in the smoke library
-					smokeruby_object *o = value_obj_info(M, self);
-					if (	o != 0
-							&& o->ptr != 0
-							&& Smoke::isDerivedFrom(Smoke::ModuleIndex(o->smoke, o->classId), Smoke::findClass("QObject")) )
-					{
-						QObject * qobject = (QObject *) o->smoke->cast(o->ptr, o->classId, o->smoke->idClass("QObject").index);
-static QByteArray * name = 0;
-						if (name == 0) {
-							name = new QByteArray();
-						}
+    for (auto const& meth : milist) {
+      assert(meth != Smoke::NullModuleIndex);
 
-						*name = mrb_sym2name(M, mrb_symbol(argv[0]));
-						const QMetaObject * meta = qobject->metaObject();
+      Smoke::Index i = meth.smoke->methodMaps[meth.index].method;
+      assert(i != 0); // shouldn't happen
+      if(i > 0) {	// single match
+        const Smoke::Method &methodRef = meth.smoke->methods[i];
+        if ((methodRef.flags & Smoke::mf_internal) == 0) {
+          methodIds.push_back(Smoke::ModuleIndex(meth.smoke, i));
+        }
+      } else {		// multiple match
+        if (do_debug & qtdb_calls) qWarning("Ambiguous Method %s::%s", cpp_name.c_str(), meth_name.c_str());
+        for (i = -i; meth.smoke->ambiguousMethodList[i]; ++i) { // turn into ambiguousMethodList index
+          const Smoke::Method &methodRef = meth.smoke->methods[meth.smoke->ambiguousMethodList[i]];
+          if ((methodRef.flags & Smoke::mf_internal) == 0) {
+            methodIds.push_back(Smoke::ModuleIndex(meth.smoke, meth.smoke->ambiguousMethodList[i]));
 
-						if (argc == 1) {
-							if (name->endsWith("?")) {
-								name->replace(0, 1, pred->mid(0, 1).toUpper());
-								name->replace(0, 0, "is");
-								if (meta->indexOfProperty(*name) == -1) {
-									name->replace(0, 2, "has");
-								}
-							}
+            // if (do_debug & qtdb_calls) qWarning("Ambiguous Method %s::%s => %d", cpp_name.c_str(), meth_name.c_str(), meth.smoke->ambiguousMethodList[i]);
+          }
+        }
+      }
+    }
+  }
 
-							if (meta->indexOfProperty(*name) != -1) {
-								mrb_value qvariant = mrb_funcall(M, self, "property", 1, mrb_str_new_cstr(M, *name));
-								return mrb_funcall(M, qvariant, "value", 0);
-							}
-						}
+  // If we didn't find any methods and the method name contains an underscore
+  // then convert to camelcase and try again
+  if(methodIds.empty() and std::regex_match(method, std::regex("._."))) {
+    // If the method name contains underscores, convert to camel case
+    // form and try again
+    std::string new_method;
+    new_method.reserve(method.size());
+    for(auto i = method.begin(); i < method.end(); ++i) {
+      new_method += (*i == '_' and ++i != method.end())? std::toupper(*i) : *i;
+    }
+    return do_method_missing(M, pkg, new_method, cls, argc, argv);
+  }
 
-						if (argc == 2 && name->endsWith("=")) {
-							name->replace("=", "");
-							if (meta->indexOfProperty(*name) != -1) {
-								mrb_value qvariant = mrb_funcall(M, self, "qVariantFromValue", 1, argv[1]);
-								return mrb_funcall(M, self, "setProperty", 2, mrb_str_new_cstr(M, *name), qvariant);
-							}
-						}
+  /*
+  // Debugging output for method lookup
+  if(do_debug & qtdb_calls) {
+    qWarning("Searching for %s#&s", cpp_name.c_str(), method.c_str());
+    qWarning("Munged method names:");
+    for(auto const& meth : methods) { qWarning("        %s", meth.c_str()); }
+    qWarning("candidate list:");
+    prototypes = dumpCandidates(methodIds).split("\n");
+    line_len = (prototypes.collect { |p| p.length }).max;
+        prototypes.zip(methodIds) {
+          |prototype,id| puts "#{prototype.ljust line_len}  (smoke: #{id.smoke} index: #{id.index})"
+        }
+  }
+  */
 
-						int classId = o->smoke->idClass(meta->className()).index;
+  // Find the best match
+  Smoke::ModuleIndex chosen;
+  int best_match = -1;
+  for(auto const& id : methodIds) {
+    // if(do_debug & qtdb_calls) { qWarning("matching => smoke: #{id.smoke} index: #{id.index}"); }
 
-						// The class isn't in the Smoke lib. But if it is called 'local::Merged'
-						// it is from a QDBusInterface and the slots are remote, so don't try to
-						// those.
-						while (	classId == 0
-								&& qstrcmp(meta->className(), "local::Merged") != 0
-								&& qstrcmp(meta->superClass()->className(), "QDBusAbstractInterface") != 0 )
-						{
-							// Assume the QObject has slots which aren't in the Smoke library, so try
-							// and call the slot directly
-							for (int id = meta->methodOffset(); id < meta->methodCount(); id++) {
-								if (meta->method(id).methodType() == QMetaMethod::Slot) {
-									QByteArray signature(meta->method(id).signature());
-									QByteArray methodName = signature.mid(0, signature.indexOf('('));
+    int current_match = id.smoke->methods[id.index].flags & Smoke::mf_const ? 1 : 0;
+    for(mrb_value const* arg = argv; arg < (argv + argc); ++arg) {
+      Smoke* smoke = id.smoke;
+      char const* t = smoke->types[smoke->argumentList[smoke->methods[id.index].args + arg - argv]].name;
+      char const* argtype = value_to_type_flag(M, *arg);
+      int score = checkarg(argtype, t);
+      current_match += score;
+      if(do_debug & qtdb_calls && score >= 0) { qWarning("        %s (%s) score: %d", t, argtype, score); }
+    }
 
-									// Don't check that the types of the ruby args match the c++ ones for now,
-									// only that the name and arg count is the same.
-									if (*name == methodName && meta->method(id).parameterTypes().count() == (argc - 1)) {
-										QList<MocArgument*> args = get_moc_arguments(M,	o->smoke, meta->method(id).typeName(),
-																						meta->method(id).parameterTypes() );
-										mrb_value result = mrb_nil_value();
-										QtRuby::InvokeNativeSlot slot(M, qobject, id, argc - 1, args, argv + 1, &result);
-										slot.next();
-										return result;
-									}
-								}
-							}
-							meta = meta->superClass();
-							classId = o->smoke->idClass(meta->className()).index;
-						}
-					}
+    // Note that if current_match > best_match, then chosen must be nil
+    if(current_match > best_match) {
+      best_match = current_match;
+      chosen = id;
+      // Ties are bad - but it is better to chose something than to fail
+    } else if(current_match == best_match && id.smoke == chosen.smoke) {
+      if(do_debug & qtdb_calls) { qWarning(" ****** warning: multiple methods with the same score of %d: %d and %d", current_match, chosen.index, id.index); }
+      chosen = id;
+    }
+    if(do_debug & qtdb_calls && current_match >= 0) { qWarning("        match => smoke: %p index: %d score: %d chosen: %d", id.smoke, id.index, current_match, chosen.index); }
+  }
 
-					return mrb_nil_value(); // TODO: mrb_call_super(argc, argv);
-				}
-			}
-			// Success. Cache result.
-			methcache.insert(*mcid, new Smoke::ModuleIndex(_current_method));
-		}
-	}
-  QtRuby::MethodCall c(M, _current_method.smoke, _current_method.index, self, temp_stack+4, argc-1);
-    c.next();
-    mrb_value result = *(c.var());
-    return result;
+  /*
+  // Additional debugging output
+  if(do_debug & qtdb_calls && chosen.index == 0 && not std::regex_match(std::regex("^operator", method))) {
+    id = find_pclassid(normalize_classname(klass.name));
+    hash = findAllMethods(id);
+    constructor_names = nil;
+    if(method == classname) {
+      qWarning("No matching constructor found, possibles:\n");
+      constructor_names = hash.keys.grep(/^#{classname}/);
+    } else {
+      qWarning("Possible prototypes:");
+      constructor_names = hash.keys;
+    }
+    method_ids = hash.values_at(*constructor_names).flatten;
+    puts dumpCandidates(method_ids);
+  } else {
+    puts "setCurrentMethod(smokeList index: #{chosen.smoke}, meth index: #{chosen.index})" if debug_level >= DebugLevel::High && chosen;
+  }
+  */
+
+  // Select the chosen method
+  return chosen != Smoke::NullModuleIndex? chosen : Smoke::NullModuleIndex;
 }
 
 mrb_value
 method_missing(mrb_state* M, mrb_value self)
 {
-  mrb_value* argv; int argc;
-  mrb_get_args(M, "*", &argv, &argc);
+  mrb_sym sym; int argc; mrb_value* argv;
+  mrb_get_args(M, "n*", &sym, &argv, &argc);
+  const char * methodName = mrb_sym2name(M, sym);
+  RClass* klass = mrb_class(M, self);
 
-  return method_missing(M, argc, argv, self);
+	// Look for 'thing?' methods, and try to match isThing() or hasThing() in the Smoke runtime
+  QByteArray pred = methodName;
+	pred = methodName;
+	if (pred.endsWith("?")) {
+		smokeruby_object *o = value_obj_info(M, self);
+		if(!o || !o->ptr) {
+      return mrb_call_super(M, self);
+		}
+
+		// Drop the trailing '?'
+		pred.replace(pred.length() - 1, 1, "");
+
+		pred.replace(0, 1, pred.mid(0, 1).toUpper());
+		pred.replace(0, 0, "is");
+		Smoke::ModuleIndex meth = o->smoke->findMethod(o->smoke->classes[o->classId].className, pred.constData());
+
+		if (meth == Smoke::NullModuleIndex) {
+			pred.replace(0, 2, "has");
+			meth = o->smoke->findMethod(o->smoke->classes[o->classId].className, pred.constData());
+		}
+
+		if (meth != Smoke::NullModuleIndex) {
+			methodName = pred.constData();
+		}
+	}
+
+  QByteArray mcid;
+  Smoke::ModuleIndex _current_method = find_cached_selector(M, argc, argv, klass, methodName, mcid);
+
+  if (_current_method == Smoke::NullModuleIndex) {
+    // Find the C++ method to call. Do that from Ruby for now
+
+    _current_method = do_method_missing(M, "Qt", methodName, mrb_class(M, self), argc, argv);
+    if (_current_method == Smoke::NullModuleIndex) {
+      const char * op = mrb_sym2name(M, sym);
+      if (	   qstrcmp(op, "-") == 0 || qstrcmp(op, "+") == 0
+						|| qstrcmp(op, "/") == 0 || qstrcmp(op, "%") == 0
+						|| qstrcmp(op, "|") == 0 )
+      {
+        // Look for operator methods of the form 'operator+=', 'operator-=' and so on..
+        char op1[3] = { op[0], '=', '\0' };
+        _current_method = do_method_missing(M, "Qt", op1, mrb_class(M, self), argc, argv);
+      }
+
+      if (_current_method == Smoke::NullModuleIndex) {
+        // Check for property getter/setter calls, and for slots in QObject classes
+        // not in the smoke library
+        smokeruby_object *o = value_obj_info(M, self);
+        if (	o != 0 && o->ptr != 0
+							&& Smoke::isDerivedFrom(Smoke::ModuleIndex(o->smoke, o->classId), Smoke::findClass("QObject")) )
+        {
+          QObject * qobject = (QObject *) o->smoke->cast(o->ptr, o->classId, o->smoke->idClass("QObject").index);
+          QByteArray name = mrb_sym2name(M, sym);
+          const QMetaObject * meta = qobject->metaObject();
+
+          if (argc == 0) {
+            if (name.endsWith("?")) {
+              name.replace(0, 1, pred.mid(0, 1).toUpper());
+              name.replace(0, 0, "is");
+              if (meta->indexOfProperty(name) == -1) {
+                name.replace(0, 2, "has");
+              }
+            }
+
+            if (meta->indexOfProperty(name) != -1) {
+              mrb_value qvariant = mrb_funcall(M, self, "property", 1, mrb_str_new(M, name.constData(), name.size()));
+              return mrb_funcall(M, qvariant, "value", 0);
+            }
+          }
+
+          if (argc == 1 && name.endsWith("=")) {
+            name.replace("=", "");
+            if (meta->indexOfProperty(name) != -1) {
+              mrb_value qvariant = mrb_funcall(M, self, "qVariantFromValue", 1, argv[0]);
+              return mrb_funcall(M, self, "setProperty", 2, mrb_str_new(M, name.constData(), name.size()), qvariant);
+            }
+          }
+
+          int classId = o->smoke->idClass(meta->className()).index;
+
+          // The class isn't in the Smoke lib. But if it is called 'local::Merged'
+          // it is from a QDBusInterface and the slots are remote, so don't try to
+          // those.
+          while (	classId == 0
+                  && qstrcmp(meta->className(), "local::Merged") != 0
+                  && qstrcmp(meta->superClass()->className(), "QDBusAbstractInterface") != 0 )
+          {
+            // Assume the QObject has slots which aren't in the Smoke library, so try
+            // and call the slot directly
+            for (int id = meta->methodOffset(); id < meta->methodCount(); id++) {
+              if (meta->method(id).methodType() == QMetaMethod::Slot) {
+                QByteArray signature(meta->method(id).signature());
+                QByteArray methodName = signature.mid(0, signature.indexOf('('));
+
+                // Don't check that the types of the ruby args match the c++ ones for now,
+                // only that the name and arg count is the same.
+                if (name == methodName && meta->method(id).parameterTypes().count() == (argc - 1)) {
+                  QList<MocArgument*> args = get_moc_arguments(M,	o->smoke, meta->method(id).typeName(),
+                                                               meta->method(id).parameterTypes() );
+                  mrb_value result = mrb_nil_value();
+                  QtRuby::InvokeNativeSlot slot(M, qobject, id, argc, args, argv, &result);
+                  slot.next();
+                  return result;
+                }
+              }
+            }
+            meta = meta->superClass();
+            classId = o->smoke->idClass(meta->className()).index;
+          }
+        }
+
+        return mrb_call_super(M, self);
+      }
+    }
+    // Success. Cache result.
+    methcache[mcid] = _current_method;
+  }
+
+  QtRuby::MethodCall c(M, _current_method.smoke, _current_method.index, self, argv, argc);
+  c.next();
+  mrb_value result = *(c.var());
+  return result;
 }
 
 mrb_value
-class_method_missing(mrb_state* M, mrb_value klass)
+class_method_missing(mrb_state* M, mrb_value self)
 {
-  mrb_value* argv; int argc;
-  mrb_get_args(M, "*", &argv, &argc);
+  mrb_sym sym; mrb_value* argv; int argc;
+  mrb_get_args(M, "n*", &sym, &argv, &argc);
 	mrb_value result = mrb_nil_value();
-	mrb_value retval = mrb_nil_value();
-	const char * methodName = mrb_sym2name(M, mrb_symbol(argv[0]));
-	mrb_value * temp_stack = (mrb_value*)mrb_malloc(M, sizeof(mrb_value) * (argc+3));
-  temp_stack[0] = mrb_str_new_cstr(M, "Qt");
-  temp_stack[1] = mrb_str_new_cstr(M, methodName);
-    temp_stack[2] = klass;
-    temp_stack[3] = mrb_nil_value();
-    for (int count = 1; count < argc; count++) {
-		temp_stack[count+3] = argv[count];
-    }
+	const char * methodName = mrb_sym2name(M, sym);
 
-    {
-      QByteArray * mcid = find_cached_selector(M, argc+3, temp_stack, klass, methodName);
+  RClass* klass = mrb_type(self) == MRB_TT_MODULE or mrb_type(self) == MRB_TT_CLASS
+                  ? mrb_class_ptr(self) : mrb_class(M, self);
 
-		if (_current_method.index == -1) {
-			retval = mrb_funcall_argv(M, mrb_obj_value(qt_internal_module(M)), mrb_intern_lit(M, "do_method_missing"), argc+3, temp_stack);
-			if (_current_method.index != -1) {
+  Smoke::ModuleIndex _current_method;
+  {
+    QByteArray mcid;
+    _current_method = find_cached_selector(M, argc, argv, klass, methodName, mcid);
+
+    if (_current_method == Smoke::NullModuleIndex) {
+      _current_method = do_method_missing(M, "Qt", methodName, klass, argc, argv);
+			if (_current_method != Smoke::NullModuleIndex) {
 				// Success. Cache result.
-				methcache.insert(*mcid, new Smoke::ModuleIndex(_current_method));
+				methcache[mcid] = _current_method;
 			}
 		}
 	}
 
-    if (_current_method.index == -1) {
-static QRegExp * rx = 0;
-		if (rx == 0) {
-			rx = new QRegExp("[a-zA-Z]+");
-		}
-
-		if (rx->indexIn(methodName) == -1) {
-			// If an operator method hasn't been found as an instance method,
-			// then look for a class method - after 'op(self,a)' try 'self.op(a)'
-      mrb_value * method_stack = (mrb_value*) mrb_malloc(M, sizeof(mrb_value) * (argc - 1));
-	    	method_stack[0] = argv[0];
-	    	for (int count = 1; count < argc - 1; count++) {
-				method_stack[count] = argv[count+1];
-    		}
-        result = method_missing(M, argc-1, method_stack, argv[1]);
-			return result;
-		} else {
-			return mrb_nil_value(); // TODO: mrb_call_super(argc, argv);
-		}
+  if (_current_method == Smoke::NullModuleIndex) {
+    static QRegExp const rx("[a-zA-Z]+");
+    if (rx.indexIn(methodName) == -1) {
+      // If an operator method hasn't been found as an instance method,
+      // then look for a class method - after 'op(self,a)' try 'self.op(a)'
+      return method_missing(M, argv[1]);
+    } else {
+      return mrb_call_super(M, self);
     }
-    QtRuby::MethodCall c(M, _current_method.smoke, _current_method.index, mrb_nil_value(), temp_stack+4, argc-1);
-    c.next();
-    result = *(c.var());
-    return result;
+  }
+  QtRuby::MethodCall c(M, _current_method.smoke, _current_method.index, mrb_nil_value(), argv, argc);
+  c.next();
+  result = *(c.var());
+  return result;
 }
 
 QList<MocArgument*>
@@ -1210,9 +1328,9 @@ set_obj_info(mrb_state* M, const char * className, smokeruby_object * o)
 		mrb_raisef(M, mrb_class_get(M, "RuntimeError"), "Class '%S' not found", mrb_str_new_cstr(M, className));
 	}
 
-	Smoke::ModuleIndex *r = classcache.value(className);
-	if (r != 0) {
-		o->classId = (int) r->index;
+	Smoke::ModuleIndex const& r = classcache.value(className);
+	if (r != Smoke::NullModuleIndex) {
+		o->classId = (int) r.index;
 	}
 	// If the instance is a subclass of QObject, then check to see if the
 	// className from its QMetaObject is in the Smoke library. If not then
@@ -1265,7 +1383,8 @@ set_obj_info(mrb_state* M, const char * className, smokeruby_object * o)
 		}
 	}
 
-  return mrb_obj_value(Data_Wrap_Struct(M, mrb_class_ptr(klass), &smokeruby_type, (void *) o));
+  assert(mrb_type(klass) == MRB_TT_CLASS);
+  return mrb_obj_value(Data_Wrap_Struct(M, mrb_class_ptr(klass), &smokeruby_type, o));
 }
 
 mrb_value
@@ -1275,26 +1394,27 @@ kross2smoke(mrb_state* M, mrb_value /*self*/)
   mrb_get_args(M, "oo", &krobject, &new_klass);
   mrb_value new_klassname = mrb_funcall(M, new_klass, "name", 0);
 
-  Smoke::ModuleIndex * cast_to_id = classcache.value(mrb_string_value_ptr(M, new_klassname));
-  if (cast_to_id == 0) {
+  Smoke::ModuleIndex const& cast_to_id = classcache.value(mrb_string_value_ptr(M, new_klassname));
+  if (cast_to_id == Smoke::NullModuleIndex) {
     mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "unable to find class \"%S\" to cast to\n", mrb_string_value_ptr(M, new_klassname));
   }
 
   void* o;
   Data_Get_Struct(M, krobject, &smokeruby_type, o);
 
-  smokeruby_object * o_cast = alloc_smokeruby_object(M, false, cast_to_id->smoke, (int) cast_to_id->index, o);
+  smokeruby_object * o_cast = alloc_smokeruby_object(M, false, cast_to_id.smoke, (int) cast_to_id.index, o);
 
+  assert(mrb_type(new_klass) == MRB_TT_CLASS);
   mrb_value obj = mrb_obj_value(Data_Wrap_Struct(M, mrb_class_ptr(new_klass), &smokeruby_type, o_cast));
   mapPointer(M, obj, o_cast, o_cast->classId, 0);
   return obj;
 }
 
 const char *
-value_to_type_flag(mrb_state* M, mrb_value ruby_value)
+value_to_type_flag(mrb_state* M, mrb_value const& ruby_value)
 {
 	const char * classname = mrb_obj_classname(M, ruby_value);
-	const char *r = "";
+	const char *r = NULL;
 	if (mrb_nil_p(ruby_value))
 		r = "u";
 	else if (mrb_type(ruby_value) == MRB_TT_FIXNUM || qstrcmp(classname, "Qt::Integer") == 0)
@@ -1319,7 +1439,8 @@ value_to_type_flag(mrb_state* M, mrb_value ruby_value)
 		r = "U";
 	}
 
-    return r;
+  assert(r);
+  return r;
 }
 
 mrb_value prettyPrintMethod(mrb_state* M, Smoke::Index id)
