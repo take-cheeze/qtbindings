@@ -34,8 +34,6 @@
 
 static bool qtruby_embedded = false;
 
-extern "C" {
-
 Q_DECL_EXPORT void 
 set_qtruby_embedded(bool yn) {
 #if !defined(RUBY_INIT_STACK)
@@ -45,8 +43,6 @@ set_qtruby_embedded(bool yn) {
 	}
 #endif
     qtruby_embedded = yn;
-}
-
 }
 
 // This is based on the SWIG SWIG_INIT_STACK and SWIG_RELEASE_STACK macros.

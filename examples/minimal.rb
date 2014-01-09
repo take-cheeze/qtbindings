@@ -1,4 +1,4 @@
-app = Qt::Application.new 0, []
+app = Qt::Application.new []
 
 main = Qt::Widget.new
 main.setWindowTitle 'Hello World!'

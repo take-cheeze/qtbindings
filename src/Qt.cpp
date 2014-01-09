@@ -69,9 +69,7 @@
 #include "smoke.h"
 #include "marshall_types.h"
 
-extern "C" {
 bool application_terminated = false;
-}
 
 QList<Smoke*> smokeList;
 QHash<Smoke*, QtRubyModule> qtruby_modules;
@@ -699,7 +697,7 @@ findAllMethodNames(mrb_state* M, mrb_value /*self*/)
 Smoke::ModuleIndex
 find_cached_selector(mrb_state* M, int argc, mrb_value * argv, RClass* klass, const char * methodName, QByteArray& mcid)
 {
-  mcid = mrb_string_value_ptr(M ,mrb_mod_cv_get(M, klass, mrb_intern_lit(M, "QtClassName"))); // mrb_obj_classname(M, klass);
+  mcid = mrb_string_value_ptr(M, mrb_mod_cv_get(M, klass, mrb_intern_lit(M, "QtClassName")));
 	mcid += ';';
 	mcid += methodName;
 	for(int i=0; i<argc ; i++)
@@ -1322,8 +1320,8 @@ qobject_metaobject(mrb_state* M, mrb_value self)
 mrb_value
 set_obj_info(mrb_state* M, const char * className, smokeruby_object * o)
 {
-  mrb_value klass = mrb_funcall(M, mrb_obj_value(qt_internal_module(M)), "find_class",
-                                1, mrb_str_new_cstr(M, className) );
+  mrb_value klass = mrb_hash_get(M, mrb_mod_cv_get(
+      M, qt_internal_module(M), mrb_intern_lit(M, "Classes")), mrb_str_new_cstr(M, className));
   if (mrb_nil_p(klass)) {
 		mrb_raisef(M, mrb_class_get(M, "RuntimeError"), "Class '%S' not found", mrb_str_new_cstr(M, className));
 	}

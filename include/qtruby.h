@@ -125,12 +125,10 @@ enum QtDebugChannel {
 #define qvariant_class(M) mrb_class_get_under(M, qt_module(M), "Variant")
 #define moduleindex_class(M) mrb_class_get_under(M, qt_internal_module(M), "ModuleIndex")
 
-extern "C" {
   mrb_value mrb_call_super(mrb_state* M, mrb_value self);
 
 extern Q_DECL_EXPORT bool application_terminated;
 extern Q_DECL_EXPORT void set_qtruby_embedded(bool yn);
-}
 
 
 // extern Q_DECL_EXPORT Smoke::ModuleIndex _current_method;

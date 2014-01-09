@@ -7,26 +7,12 @@ MRuby::Build.new do |conf|
 
   conf.linker.library_paths << '/opt/local/lib' if is_darwin
 
-  conf.linker.libraries += [
-    'smokebase', 'smokephonon', 'smokeqtgui',
-    'smokeqtcore', 'smokeqtopengl', 'smokeqtwebkit',
-    'smokeqtdbus', 'smokeqtdeclarative', 'smokeqtnetwork',
-    'smokeqtxml', 'smokeqtsvg', 'smokeqtsql',
-    'smokeqtuitools', 'smokeqtscript', 'smokeqttest',
-
-    'QtCore', 'QtDBus', 'QtDeclarative',
-    'QtGui', 'QtScript', 'QtOpenGL',
-    'QtSql', 'QtXml', 'QtNetwork',
-    'QtWebKit',
-
-    'qscintilla2']
-
   [conf.cc, conf.cxx].each do |c|
     com = c.command.split ' '
     c.command = com[0]
     c.flags = com[1, com.length - 1].concat c.flags << '-O0'
     c.include_paths << '/opt/local/include' if is_darwin
-    c.defines << 'MRB_GC_FIXED_ARENA' << 'QT_QTDBUS' << 'DEBUG=1'
+    c.defines << 'MRB_GC_FIXED_ARENA' << 'DEBUG=1'
   end
 
   conf.linker.command = conf.cxx.command

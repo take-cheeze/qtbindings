@@ -52,9 +52,18 @@
 #include <smoke/qtopengl_smoke.h>
 #include <smoke/qtnetwork_smoke.h>
 #include <smoke/qtsvg_smoke.h>
+#include <smoke/qtdeclarative_smoke.h>
+#include <smoke/qtscript_smoke.h>
+#include <smoke/qttest_smoke.h>
+#include <smoke/qtuitools_smoke.h>
+#include <smoke/qtwebkit_smoke.h>
 
 #ifdef QT_QTDBUS
 #include <smoke/qtdbus_smoke.h>
+#endif
+
+#ifdef QT_QSCINTILLA2
+#include <smoke/qsci_smoke.h>
 #endif
 
 #include <mruby.h>
@@ -64,6 +73,7 @@
 #include <mruby/class.h>
 #include <mruby/variable.h>
 #include <mruby/proc.h>
+#include <mruby/hash.h>
 
 #include <regex>
 #include <iostream>
@@ -105,8 +115,6 @@ extern bool qUnregisterResourceData(int, const unsigned char *, const unsigned c
 
 extern TypeHandler Qt_handlers[];
 extern const char * resolve_classname_qt(smokeruby_object * o);
-
-extern "C" {
 
 static mrb_value
 qdebug(mrb_state* M, mrb_value klass)
@@ -1847,20 +1855,6 @@ debugging(mrb_state*, mrb_value /*self*/)
 }
 
 static mrb_value
-insert_pclassid(mrb_state* M, mrb_value self)
-{
-  mrb_value p_value, mi_value;
-  mrb_get_args(M, "oo", &p_value, &mi_value);
-    char *p = mrb_string_value_ptr(M, p_value);
-    int ix = mrb_fixnum(mrb_funcall(M, mi_value, "index", 0));
-    int smokeidx = mrb_fixnum(mrb_funcall(M, mi_value, "smoke", 0));
-    Smoke::ModuleIndex mi(smokeList[smokeidx], ix);
-    classcache.insert(QByteArray(p), Smoke::ModuleIndex(mi));
-    IdToClassNameMap.insert(mi, new QByteArray(p));
-    return self;
-}
-
-static mrb_value
 classid2name(mrb_state* M, mrb_value /*self*/)
 {
   mrb_value mi_value;
@@ -2085,14 +2079,6 @@ is_disposed(mrb_state* M, mrb_value self)
 	return mrb_bool_value(not (o != 0 && o->ptr != 0));
 }
 
-mrb_value
-isQObject(mrb_state* M, mrb_value /*self*/)
-{
-  mrb_value c;
-  mrb_get_args(M, "o", &c);
-  return mrb_bool_value(Smoke::isDerivedFrom(mrb_string_value_ptr(M, c), "QObject"));
-}
-
 // Returns the Smoke classId of a ruby instance
 static mrb_value
 idInstance(mrb_state* M, mrb_value /*self*/)
@@ -2236,23 +2222,13 @@ getClassList(mrb_state* M, mrb_value /*self*/)
     return class_list;
 }
 
-static mrb_value
-create_qobject_class(mrb_state* M, mrb_value /*self*/)
+static RClass*
+create_qobject_class(mrb_state* M, char const* package, RClass* klass)
 {
-  mrb_value package_value, module_value;
-  mrb_get_args(M, "oo", &package_value, &module_value);
-	const char *package = mrb_string_value_ptr(M, package_value);
-	// this won't work:
-	// strdup(mrb_string_value_ptr(M, rb_funcall(module_value, mrb_intern("name"), 0)))
-	// any ideas why?
-	mrb_value value_moduleName = mrb_class_path(M, mrb_class_ptr(module_value));
-	const char *moduleName = strdup(mrb_string_value_ptr(M, value_moduleName));
-	RClass* klass = mrb_class_ptr(module_value);
-
+  mrb_value const module_value = mrb_obj_value(klass);
 	QString packageName(package);
-
-	foreach(QString s, packageName.mid(strlen(moduleName) + 2).split("::")) {
-		klass = mrb_define_class_under(M, klass, (const char*) s.toLatin1(), qt_base_class(M));
+	for(QString const& s : packageName.mid(RSTRING_LEN(mrb_class_path(M, klass)) + 2).split("::")) {
+		klass = mrb_define_class_under(M, klass, s.toLatin1().constData(), qt_base_class(M));
 	}
 
 	if (packageName == "Qt::Application" || packageName == "Qt::CoreApplication" ) {
@@ -2325,24 +2301,15 @@ create_qobject_class(mrb_state* M, mrb_value /*self*/)
 			m.class_created(package, module_value, mrb_obj_value(klass));
 	}
 
-	return mrb_obj_value(klass);
+	return klass;
 }
 
-static mrb_value
-create_qt_class(mrb_state* M, mrb_value /*self*/)
+static RClass*
+create_qt_class(mrb_state* M, char const* package, RClass* klass)
 {
-  mrb_value package_value, module_value;
-  mrb_get_args(M, "oo", &package_value, &module_value);
-	const char *package = strdup(mrb_string_value_ptr(M, package_value));
-	// this won't work:
-	// strdup(mrb_string_value_ptr(M, rb_funcall(module_value, mrb_intern("name"), 0)))
-	// any ideas why?
-	mrb_value value_moduleName = mrb_class_path(M, mrb_class_ptr(module_value));
-	const char *moduleName = strdup(mrb_string_value_ptr(M, value_moduleName));
-	RClass* klass = mrb_class_ptr(module_value);
+  mrb_value const module_value = mrb_obj_value(klass);
 	QString packageName(package);
-
-	foreach(QString s, packageName.mid(strlen(moduleName) + 2).split("::")) {
+  foreach(QString s, packageName.mid(RSTRING_LEN(mrb_class_path(M, klass)) + 2).split("::")) {
 		klass = mrb_define_class_under(M, klass, (const char*) s.toLatin1(), qt_base_class(M));
 	}
 
@@ -2396,8 +2363,7 @@ create_qt_class(mrb_state* M, mrb_value /*self*/)
 			m.class_created(package, module_value, mrb_obj_value(klass));
 	}
 
-	free((void *) package);
-	return mrb_obj_value(klass);
+	return klass;
 }
 
 static mrb_value
@@ -2421,22 +2387,67 @@ set_application_terminated(mrb_state* M, mrb_value /*self*/)
 	return mrb_nil_value();
 }
 
-static mrb_value
-normalize_classname_default(mrb_state* M, mrb_value)
+static std::string
+normalize_classname(std::string str)
 {
-  char* str; int str_len;
-  mrb_get_args(M, "s", &str, &str_len);
-
-  std::string ret(str, str_len);
-
-  if(str_len >= 2 and str[0] == 'Q' and str[1] == '3') {
-    static std::regex const qt3_regexp("^Q3(\\w*)");
-    ret = std::regex_replace(ret, qt3_regexp, "Qt3::$1");
-  } else if(str_len >= 1 and str[0] == 'Q') {
-    static std::regex const qt_regexp("^Q(\\w+)");
-    ret = std::regex_replace(ret, qt_regexp, "Qt::$1");
+  if(str.size() >= 2 and str.substr(0, 2) == "Q3") {
+    static std::regex const qt3_regexp("^Q3(\\w*)$");
+    return std::regex_replace(str, qt3_regexp, "Qt3::$1");
+  } else if(str.size() >= 4 and str.substr(0, 4) == "Qsci") {
+    static std::regex const qsci_regexp("^Qsci(\\w+)$");
+    return std::regex_replace(str, qsci_regexp, "Qsci::$1");
+  } else if(str.size() >= 1 and str[0] == 'Q') {
+    static std::regex const qt_regexp("^Q(\\w+)$");
+    return std::regex_replace(str, qt_regexp, "Qt::$1");
   }
-  return mrb_str_new(M, ret.data(), ret.size());
+  return str;
+}
+
+static void
+init_class_list(mrb_state* M, Smoke* s, RClass* const mod)
+{
+  RClass* const internal = qt_internal_module(M);
+  mrb_sym const QtClassName = mrb_intern_lit(M, "QtClassName");
+  mrb_value const
+      Classes = mrb_mod_cv_get(M, internal, mrb_intern_lit(M, "Classes")),
+      CppNames = mrb_mod_cv_get(M, internal, mrb_intern_lit(M, "CppNames")),
+      IdClass = mrb_mod_cv_get(M, internal, mrb_intern_lit(M, "IdClass"));
+
+  assert(mrb_hash_p(Classes) and mrb_hash_p(CppNames) and mrb_array_p(IdClass));
+
+  for(int id = 1; id < s->numClasses; ++id) {
+    PROTECT_SCOPE();
+    if (!s->classes[id].className or s->classes[id].external) { continue; }
+
+    char const* name = s->classes[id].className;
+
+    if (strcmp(name, "Qt") == 0) {
+      mrb_value str = mrb_str_new(M, "Qt", 2);
+      mrb_hash_set(M, CppNames, str, str);
+      mrb_mod_cv_set(M, mod, QtClassName, mrb_str_new_cstr(M, "QGlobalSpace"));
+    }
+
+    if (strlen(name) == 0 or
+        strcmp(name, "QInternal") == 0 or strcmp(name, "WebCore") == 0 or
+        strcmp(name, "std") == 0 or strcmp(name, "QGlobalSpace") == 0
+        ) { continue; }
+
+    std::string const normalized = normalize_classname(name);
+    mrb_value const
+        normalized_mruby = mrb_str_new(M, normalized.data(), normalized.size()),
+        classname_mruby = mrb_str_new_cstr(M, name);
+    mrb_ary_set(M, IdClass, id, normalized_mruby);
+    mrb_hash_set(M, CppNames, normalized_mruby, classname_mruby);
+
+    classcache.insert(normalized.c_str(), Smoke::ModuleIndex(s, id));
+    IdToClassNameMap.insert(Smoke::ModuleIndex(s, id), new QByteArray(normalized.c_str()));
+
+    RClass* const klass = (Smoke::isDerivedFrom(name, "QObject")
+                           ? create_qobject_class : create_qt_class)(M, normalized.c_str(), mod);
+    assert(klass);
+    mrb_hash_set(M, Classes, normalized_mruby, mrb_obj_value(klass));
+    mrb_mod_cv_set(M, klass, QtClassName, classname_mruby);
+  }
 }
 
 static mrb_value
@@ -2448,80 +2459,91 @@ set_qtruby_embedded_wrapped(mrb_state* M, mrb_value /*self*/)
   return mrb_nil_value();
 }
 
-  void mrb_mruby_qt_gem_final(mrb_state*) {}
+extern "C" void mrb_mruby_qt_gem_final(mrb_state*) {}
 
- void myMessageOutput(QtMsgType type, const char *msg)
- {
-     switch (type) {
-     case QtDebugMsg:
-         fprintf(stderr, "Debug: %s\n", msg);
-         break;
-     case QtWarningMsg:
-         fprintf(stderr, "Warning: %s\n", msg);
-         break;
-     case QtCriticalMsg:
-         fprintf(stderr, "Critical: %s\n", msg);
-         break;
-     case QtFatalMsg:
-         fprintf(stderr, "Fatal: %s\n", msg);
-         abort();
-     }
- }
-
-  extern "C" {
-    void Init_qtdeclarative(mrb_state*);
-    void Init_qtscript(mrb_state*);
-    void Init_qttest(mrb_state*);
-    void Init_qtuitools(mrb_state*);
-    void Init_qtwebkit(mrb_state*);
+void myMessageOutput(QtMsgType type, const char *msg)
+{
+  switch (type) {
+    case QtDebugMsg:
+      fprintf(stderr, "Debug: %s\n", msg);
+      break;
+    case QtWarningMsg:
+      fprintf(stderr, "Warning: %s\n", msg);
+      break;
+    case QtCriticalMsg:
+      fprintf(stderr, "Critical: %s\n", msg);
+      break;
+    case QtFatalMsg:
+      fprintf(stderr, "Fatal: %s\n", msg);
+      abort();
   }
-  
-#define INIT_BINDING(module) \
-  static QtRuby::Binding module##_binding = QtRuby::Binding(M, module##_Smoke); \
-    QtRubyModule module = { "QtRuby_" #module, resolve_classname_qt, 0, &module##_binding }; \
-    qtruby_modules[module##_Smoke] = module; \
-    smokeList << module##_Smoke;
+}
 
-extern Q_DECL_EXPORT void
+extern TypeHandler QtDeclarative_handlers[];
+extern TypeHandler QtScript_handlers[];
+extern TypeHandler QtTest_handlers[];
+extern TypeHandler QtUiTools_handlers[];
+extern TypeHandler QtWebKit_handlers[];
+
+extern "C" Q_DECL_EXPORT void
 mrb_mruby_qt_gem_init(mrb_state* M)
 {
-  qInstallMsgHandler(myMessageOutput);
+    qInstallMsgHandler(myMessageOutput);
 
-    init_qtcore_Smoke();
-    init_qtgui_Smoke();
-    init_qtxml_Smoke();
-    init_qtsql_Smoke();
-    init_qtopengl_Smoke();
-    init_qtnetwork_Smoke();
-    init_qtsvg_Smoke();
+    RClass* Qt_module = mrb_define_module(M, "Qt");
+		RClass* QtInternal_module = mrb_define_module_under(M, Qt_module, "Internal");
+    mrb_mod_cv_set(M, QtInternal_module, mrb_intern_lit(M, "Classes"), mrb_hash_new(M));
+    mrb_mod_cv_set(M, QtInternal_module, mrb_intern_lit(M, "CppNames"), mrb_hash_new(M));
+    mrb_mod_cv_set(M, QtInternal_module, mrb_intern_lit(M, "IdClass"), mrb_ary_new(M));
+    RClass* Qsci_module = mrb_define_module(M, "Qsci");
+
+		RClass* QtBase_class = mrb_define_class_under(M, Qt_module, "Base", M->object_class);
+    MRB_SET_INSTANCE_TT(QtBase_class, MRB_TT_DATA);
+    mrb_data_set_gc_marker(M, QtBase_class, &smokeruby_mark);
+
+    RClass* QtModuleIndex_class = mrb_define_class_under(M, QtInternal_module, "ModuleIndex", M->object_class);
+    MRB_SET_INSTANCE_TT(QtModuleIndex_class, MRB_TT_DATA);
+
+
+#define INIT_BINDING(module, mod)  \
+    init_ ## module ## _Smoke(); \
+    static QtRuby::Binding module##_binding = QtRuby::Binding(M, module##_Smoke); \
+    QtRubyModule module = { "QtRuby_" #module, resolve_classname, 0, &module##_binding }; \
+    qtruby_modules[module##_Smoke] = module; \
+    smokeList << module##_Smoke; \
+    init_class_list(M, module ## _Smoke, mod)
+
+    INIT_BINDING(qtcore, Qt_module);
+    INIT_BINDING(qtgui, Qt_module);
+    INIT_BINDING(qtxml, Qt_module);
+    INIT_BINDING(qtsql, Qt_module);
+    INIT_BINDING(qtopengl, Qt_module);
+    INIT_BINDING(qtnetwork, Qt_module);
+    INIT_BINDING(qtsvg, Qt_module);
+    INIT_BINDING(qtdeclarative, Qt_module);
+    INIT_BINDING(qtscript, Qt_module);
+    INIT_BINDING(qttest, Qt_module);
+    INIT_BINDING(qtuitools, Qt_module);
+    INIT_BINDING(qtwebkit, Qt_module);
 #ifdef QT_QTDBUS
-    init_qtdbus_Smoke();
+    INIT_BINDING(qtdbus, Qt_module);
 #endif
+#ifdef QT_QSCINTILLA2
+    INIT_BINDING(qsci, Qsci_module);
+#endif
+
+#undef INIT_BINDING
+
     install_handlers(Qt_handlers);
-
-    INIT_BINDING(qtcore)
-    INIT_BINDING(qtgui)
-    INIT_BINDING(qtxml)
-    INIT_BINDING(qtsql)
-    INIT_BINDING(qtopengl)
-    INIT_BINDING(qtnetwork)
-    INIT_BINDING(qtsvg)
-#ifdef QT_QTDBUS
-    INIT_BINDING(qtdbus)
-#endif
+    install_handlers(QtWebKit_handlers);
+    install_handlers(QtUiTools_handlers);
+    install_handlers(QtTest_handlers);
+    install_handlers(QtScript_handlers);
+    install_handlers(QtDeclarative_handlers);
 
     if(not mrb_obj_respond_to(M, M->module_class, mrb_intern_lit(M, "name"))) {
       mrb_define_module_function(M, M->module_class, "name", &module_name, MRB_ARGS_NONE());
     }
-
-    RClass* Qt_module = mrb_define_module(M, "Qt");
-		RClass* QtInternal_module = mrb_define_module_under(M, Qt_module, "Internal");
-		RClass* QtBase_class = mrb_define_class_under(M, Qt_module, "Base", M->object_class);
-		RClass* QtModuleIndex_class = mrb_define_class_under(M, QtInternal_module, "ModuleIndex", M->object_class);
-
-    MRB_SET_INSTANCE_TT(QtBase_class, MRB_TT_DATA);
-    mrb_data_set_gc_marker(M, QtBase_class, &smokeruby_mark);
-    MRB_SET_INSTANCE_TT(QtModuleIndex_class, MRB_TT_DATA);
 
     mrb_define_method(M, QtBase_class, "initialize", initialize_qt, MRB_ARGS_ANY());
     mrb_define_module_function(M, QtBase_class, "method_missing", class_method_missing, MRB_ARGS_ANY());
@@ -2536,19 +2558,18 @@ mrb_mruby_qt_gem_init(mrb_state* M)
     mrb_define_method(M, QtBase_class, "isDisposed", is_disposed, MRB_ARGS_REQ(0));
     mrb_define_method(M, QtBase_class, "disposed?", is_disposed, MRB_ARGS_REQ(0));
 
-	mrb_define_method(M, QtBase_class, "qVariantValue", qvariant_value, MRB_ARGS_REQ(2));
-	mrb_define_method(M, QtBase_class, "qVariantFromValue", qvariant_from_value, MRB_ARGS_ANY());
+    mrb_define_method(M, QtBase_class, "qVariantValue", qvariant_value, MRB_ARGS_REQ(2));
+    mrb_define_method(M, QtBase_class, "qVariantFromValue", qvariant_from_value, MRB_ARGS_ANY());
 
-	mrb_define_method(M, M->object_class, "qDebug", qdebug, MRB_ARGS_REQ(1));
-	mrb_define_method(M, M->object_class, "qFatal", qfatal, MRB_ARGS_REQ(1));
-	mrb_define_method(M, M->object_class, "qWarning", qwarning, MRB_ARGS_REQ(1));
+    mrb_define_method(M, M->object_class, "qDebug", qdebug, MRB_ARGS_REQ(1));
+    mrb_define_method(M, M->object_class, "qFatal", qfatal, MRB_ARGS_REQ(1));
+    mrb_define_method(M, M->object_class, "qWarning", qwarning, MRB_ARGS_REQ(1));
 
     mrb_define_module_function(M, QtInternal_module, "getMethStat", getMethStat, MRB_ARGS_REQ(0));
     mrb_define_module_function(M, QtInternal_module, "getClassStat", getClassStat, MRB_ARGS_REQ(0));
     mrb_define_module_function(M, QtInternal_module, "getIsa", getIsa, MRB_ARGS_REQ(1));
     mrb_define_module_function(M, QtInternal_module, "setDebug", setDebug, MRB_ARGS_REQ(1));
     mrb_define_module_function(M, QtInternal_module, "debug", debugging, MRB_ARGS_REQ(0));
-    mrb_define_module_function(M, QtInternal_module, "insert_pclassid", insert_pclassid, MRB_ARGS_REQ(2));
     mrb_define_module_function(M, QtInternal_module, "classid2name", classid2name, MRB_ARGS_REQ(1));
     mrb_define_module_function(M, QtInternal_module, "find_pclassid", find_pclassid, MRB_ARGS_REQ(1));
 
@@ -2557,7 +2578,6 @@ mrb_mruby_qt_gem_init(mrb_state* M)
     mrb_define_module_function(M, QtInternal_module, "addSignalMethods", add_signal_methods, MRB_ARGS_REQ(2));
     mrb_define_module_function(M, QtInternal_module, "mapObject", mapObject, MRB_ARGS_REQ(1));
 
-    mrb_define_module_function(M, QtInternal_module, "isQObject", isQObject, MRB_ARGS_REQ(1));
     mrb_define_module_function(M, QtInternal_module, "idInstance", idInstance, MRB_ARGS_REQ(1));
     mrb_define_module_function(M, QtInternal_module, "findClass", findClass, MRB_ARGS_REQ(1));
 //     mrb_define_module_function(M, QtInternal_module, "idMethodName", idMethodName, MRB_ARGS_REQ(1));
@@ -2567,8 +2587,6 @@ mrb_mruby_qt_gem_init(mrb_state* M)
     mrb_define_module_function(M, QtInternal_module, "dumpCandidates", dumpCandidates, MRB_ARGS_REQ(1));
     mrb_define_module_function(M, QtInternal_module, "isObject", isObject, MRB_ARGS_REQ(1));
     mrb_define_module_function(M, QtInternal_module, "getClassList", getClassList, MRB_ARGS_REQ(0));
-    mrb_define_module_function(M, QtInternal_module, "create_qt_class", create_qt_class, MRB_ARGS_REQ(2));
-    mrb_define_module_function(M, QtInternal_module, "create_qobject_class", create_qobject_class, MRB_ARGS_REQ(2));
     mrb_define_module_function(M, QtInternal_module, "cast_object_to", cast_object_to, MRB_ARGS_REQ(2));
     mrb_define_module_function(M, Qt_module, "dynamic_cast", cast_object_to, MRB_ARGS_REQ(2));
     mrb_define_module_function(M, QtInternal_module, "kross2smoke", kross2smoke, MRB_ARGS_REQ(2));
@@ -2576,22 +2594,12 @@ mrb_mruby_qt_gem_init(mrb_state* M)
 
     mrb_define_module_function(M, QtInternal_module, "application_terminated=", set_application_terminated, MRB_ARGS_REQ(1));
 
-    mrb_define_module_function(M, QtInternal_module, "normalize_classname_default", &normalize_classname_default, MRB_ARGS_REQ(1));
-
     mrb_define_module_function(M, Qt_module, "version", version, MRB_ARGS_NONE());
-  mrb_define_module_function(M, Qt_module, "qtruby_version", qtruby_version, MRB_ARGS_NONE());
+    mrb_define_module_function(M, Qt_module, "qtruby_version", qtruby_version, MRB_ARGS_NONE());
 
     mrb_define_module_function(M, Qt_module, "qRegisterResourceData", q_register_resource_data, MRB_ARGS_REQ(4));
     mrb_define_module_function(M, Qt_module, "qUnregisterResourceData", q_unregister_resource_data, MRB_ARGS_REQ(4));
 
     rObject_typeId = QMetaType::registerType("rObject", &delete_ruby_object, &create_ruby_object);
-
-  Init_qtdeclarative(M);
-  Init_qtscript(M);
-  Init_qttest(M);
-  Init_qtuitools(M);
-  Init_qtwebkit(M);
-}
-
 }
 // kate: space-indent false;

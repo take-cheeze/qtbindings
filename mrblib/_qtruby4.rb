@@ -199,7 +199,7 @@ module Qt
       klasses.delete(self)
       ids = []
       Qt::Internal::getAllParents(classid, ids)
-      return [self] + ids.map {|id| Qt::Internal.find_class(Qt::Internal.classid2name(id))} + klasses
+      return [self] + ids.map {|id| Qt::Internal::Classes[Qt::Internal.classid2name(id)] } + klasses
     end
 
     # Change the behaviors of is_a? and kind_of? (alias of is_a?) to use above self.ancestors method
@@ -2470,12 +2470,6 @@ module Qt
   end
 
   module Internal
-    @@classes   = {}
-    CppNames = {}
-    @@idclass   = []
-
-    @@normalize_procs = []
-
     class ModuleIndex
       attr_accessor :index
 
@@ -2492,54 +2486,13 @@ module Qt
       end
     end
 
-    def self.classes
-      return @@classes
-    end
-
-    def self.idclass
-      return @@idclass
-    end
-
-    def self.add_normalize_proc(func)
-      @@normalize_procs << func
-    end
-
-    def self.normalize_classname(classname)
-      @@normalize_procs.each do |func|
-        ret = func.call(classname)
-        if !ret.nil?
-          return ret
-        end
-      end
-      normalize_classname_default classname
-    end
-
-    def Internal.init_class(c)
-      if c == "WebCore" || c == "std" || c == "QGlobalSpace"
-        return
-      end
-      classname = Qt::Internal::normalize_classname(c)
-      classId = Qt::Internal.findClass(c)
-      insert_pclassid(classname, classId)
-      @@idclass[classId.index] = classname
-      CppNames[classname] = c
-      klass = isQObject(c) ? create_qobject_class(classname, Qt) \
-                                                   : create_qt_class(classname, Qt)
-      @@classes[classname] = klass unless klass.nil?
-      klass.const_set :QtClassName, c
-    end
-
     def Internal.debug_level
       Qt.debug_level
     end
 
-    def Internal.find_class(classname)
-      @@classes[classname]
-    end
-
-    @@classes['Qt::Integer'] = Qt::Integer
-    @@classes['Qt::Boolean'] = Qt::Boolean
-    @@classes['Qt::Enum'] = Qt::Enum
+    Classes['Qt::Integer'] = Qt::Integer
+    Classes['Qt::Boolean'] = Qt::Boolean
+    Classes['Qt::Enum'] = Qt::Enum
 
     def Internal.get_qinteger(num)
       return num.value
@@ -2919,20 +2872,6 @@ class Module
     ids << classid
     ids.each { |c| Qt::Internal::findAllMethodNames(meths, c, flags) }
     return meths.uniq
-  end
-end
-
-module Qt
-  module Internal
-    getClassList.each do |c|
-      if c == "Qt"
-        # Don't change Qt to Qt::t, just leave as is
-        CppNames["Qt"] = c
-        ::Qt.const_set :QtClassName, "QGlobalSpace"
-      elsif c != "QInternal" && !c.empty?
-        Qt::Internal::init_class(c)
-      end
-    end
   end
 end
 
