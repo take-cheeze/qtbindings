@@ -38,6 +38,6 @@ MRuby::Build.new do |conf|
   conf.gem :github => 'iij/mruby-tempfile'
   conf.gem :github => 'iij/mruby-env'
   conf.gem :github => 'iij/mruby-require'
+  conf.gem :github => 'mattn/mruby-onig-regexp'
   conf.gem "#{MRUBY_ROOT}/.."
-  conf.gem "#{MRUBY_ROOT}/mruby-onig-regexp"
 end
