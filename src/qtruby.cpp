@@ -2421,13 +2421,8 @@ init_class_list(mrb_state* M, Smoke* s, RClass* const mod)
 
     char const* name = s->classes[id].className;
 
-    if (strcmp(name, "Qt") == 0) {
-      mrb_value str = mrb_str_new(M, "Qt", 2);
-      mrb_hash_set(M, CppNames, str, str);
-      mrb_mod_cv_set(M, mod, QtClassName, mrb_str_new_cstr(M, "QGlobalSpace"));
-    }
-
     if (strlen(name) == 0 or
+        strcmp(name, "Qt") == 0 or
         strcmp(name, "QInternal") == 0 or strcmp(name, "WebCore") == 0 or
         strcmp(name, "std") == 0 or strcmp(name, "QGlobalSpace") == 0
         ) { continue; }
@@ -2496,6 +2491,12 @@ mrb_mruby_qt_gem_init(mrb_state* M)
     mrb_mod_cv_set(M, QtInternal_module, mrb_intern_lit(M, "CppNames"), mrb_hash_new(M));
     mrb_mod_cv_set(M, QtInternal_module, mrb_intern_lit(M, "IdClass"), mrb_ary_new(M));
     RClass* Qsci_module = mrb_define_module(M, "Qsci");
+
+    {
+      mrb_value str = mrb_str_new(M, "Qt", 2);
+      mrb_hash_set(M, mrb_mod_cv_get(M, QtInternal_module, mrb_intern_lit(M, "CppNames")), str, str);
+      mrb_mod_cv_set(M, Qt_module, mrb_intern_lit(M, "QtClassName"), mrb_str_new_cstr(M, "QGlobalSpace"));
+    }
 
 		RClass* QtBase_class = mrb_define_class_under(M, Qt_module, "Base", M->object_class);
     MRB_SET_INSTANCE_TT(QtBase_class, MRB_TT_DATA);
