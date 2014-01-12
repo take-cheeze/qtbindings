@@ -2490,7 +2490,6 @@ mrb_mruby_qt_gem_init(mrb_state* M)
     mrb_mod_cv_set(M, QtInternal_module, mrb_intern_lit(M, "Classes"), mrb_hash_new(M));
     mrb_mod_cv_set(M, QtInternal_module, mrb_intern_lit(M, "CppNames"), mrb_hash_new(M));
     mrb_mod_cv_set(M, QtInternal_module, mrb_intern_lit(M, "IdClass"), mrb_ary_new(M));
-    RClass* Qsci_module = mrb_define_module(M, "Qsci");
 
     {
       mrb_value str = mrb_str_new(M, "Qt", 2);
@@ -2530,6 +2529,7 @@ mrb_mruby_qt_gem_init(mrb_state* M)
     INIT_BINDING(qtdbus, Qt_module);
 #endif
 #ifdef QT_QSCINTILLA2
+    RClass* Qsci_module = mrb_define_module(M, "Qsci");
     INIT_BINDING(qsci, Qsci_module);
 #endif
 
