@@ -49,5 +49,5 @@ sortedView.header.sortIndicatorShown = true
 sortedView.header.clickable = true
 sortedView.show
 
-# Qt::Internal::setDebug Qt::QtDebugChannel::QTDB_VIRTUAL
+# Qt::Internal::debug = Qt::DebugChannel::VIRTUAL
 app.exec

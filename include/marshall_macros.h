@@ -84,7 +84,7 @@ void marshall_ItemList(Marshall *m) {
 
 			if (!m->type().isConst()) {
 				mrb_ary_clear(m->M, list);
-	
+
 				for(int i = 0; i < cpplist->size(); ++i ) {
 					mrb_value obj = getPointerObject(m->M, (void *) cpplist->at(i) );
 					mrb_ary_push(m->M, list, obj);
@@ -96,7 +96,7 @@ void marshall_ItemList(Marshall *m) {
 			}
 		}
 		break;
-      
+
 		case Marshall::ToVALUE:
 		{
 			ItemList * cpplist = (ItemList *) m->item().s_voidp;
@@ -119,14 +119,14 @@ void marshall_ItemList(Marshall *m) {
 
 				mrb_value obj = getPointerObject(m->M, p);
 				if (mrb_nil_p(obj)) {
-					smokeruby_object  * o = alloc_smokeruby_object(m->M,	false, 
+					smokeruby_object  * o = alloc_smokeruby_object(m->M,	false,
 																	mi.smoke,
-																	mi.index, 
+																	mi.index,
 																	p );
 
 					obj = set_obj_info(m->M, resolve_classname(o), o);
 				}
-			
+
 				mrb_ary_push(m->M, av, obj);
 			}
 
@@ -185,8 +185,8 @@ void marshall_ValueListItem(Marshall *m) {
 				smokeruby_object *o = value_obj_info(m->M, item);
 
 				// Special case for the QList<QVariant> type
-				if (	qstrcmp(ItemSTR, "QVariant") == 0 
-						&& (!o || !o->ptr || o->classId != o->smoke->idClass("QVariant", true).index) ) 
+				if (	qstrcmp(ItemSTR, "QVariant") == 0
+						&& (!o || !o->ptr || o->classId != o->smoke->idClass("QVariant", true).index) )
 				{
 					// If the value isn't a Qt::Variant, then try and construct
 					// a Qt::Variant from it
@@ -199,7 +199,7 @@ void marshall_ValueListItem(Marshall *m) {
 
 				if (!o || !o->ptr)
 					continue;
-				
+
 				void *ptr = o->ptr;
 				ptr = o->smoke->cast(
 					ptr,				// pointer
@@ -225,7 +225,7 @@ void marshall_ValueListItem(Marshall *m) {
 			}
 		}
 		break;
-      
+
 		case Marshall::ToVALUE:
 		{
 			ItemList *valuelist = (ItemList*)m->item().s_voidp;
@@ -249,13 +249,13 @@ void marshall_ValueListItem(Marshall *m) {
 
 				mrb_value obj = getPointerObject(m->M, p);
 				if(mrb_nil_p(obj)) {
-					smokeruby_object  * o = alloc_smokeruby_object(	m->M, false, 
-																	mi.smoke, 
-																	mi.index, 
+					smokeruby_object  * o = alloc_smokeruby_object(	m->M, false,
+																	mi.smoke,
+																	mi.index,
 																	p );
 					obj = set_obj_info(m->M, className, o);
 				}
-		
+
 				mrb_ary_push(m->M, av, obj);
 			}
 
@@ -268,7 +268,7 @@ void marshall_ValueListItem(Marshall *m) {
 
 		}
 		break;
-      
+
 		default:
 			m->unsupported();
 		break;
@@ -320,7 +320,7 @@ void marshall_LinkedItemList(Marshall *m) {
 				while (iter.hasNext()) {
 					mrb_value obj = getPointerObject(m->M, (void *) iter.next());
 					mrb_ary_push(m->M, list, obj);
-				}	
+				}
 			}
 
 			if (m->cleanup()) {
@@ -328,7 +328,7 @@ void marshall_LinkedItemList(Marshall *m) {
 			}
 		}
 		break;
-      
+
 		case Marshall::ToVALUE:
 		{
 			ItemList *valuelist = (ItemList*)m->item().s_voidp;
@@ -352,14 +352,14 @@ void marshall_LinkedItemList(Marshall *m) {
 
 				mrb_value obj = getPointerObject(m->M, p);
 				if (mrb_nil_p(obj)) {
-					smokeruby_object  * o = alloc_smokeruby_object(	m->M, false, 
+					smokeruby_object  * o = alloc_smokeruby_object(	m->M, false,
 																	mi.smoke,
-																	mi.index, 
+																	mi.index,
 																	p );
 
 					obj = set_obj_info(m->M, resolve_classname(o), o);
 				}
-			
+
 				mrb_ary_push(m->M, av, obj);
 			}
 
@@ -397,8 +397,8 @@ void marshall_LinkedValueListItem(Marshall *m) {
 				smokeruby_object *o = value_obj_info(m->M, item);
 
 				// Special case for the QList<QVariant> type
-				if (	qstrcmp(ItemSTR, "QVariant") == 0 
-						&& (o == 0 || o->ptr == 0 || o->classId != o->smoke->idClass("QVariant", true).index) ) 
+				if (	qstrcmp(ItemSTR, "QVariant") == 0
+						&& (o == 0 || o->ptr == 0 || o->classId != o->smoke->idClass("QVariant", true).index) )
 				{
 					// If the value isn't a Qt::Variant, then try and construct
 					// a Qt::Variant from it
@@ -411,7 +411,7 @@ void marshall_LinkedValueListItem(Marshall *m) {
 
 				if (o == 0 || o->ptr == 0)
 					continue;
-				
+
 				void *ptr = o->ptr;
 				ptr = o->smoke->cast(
 					ptr,				// pointer
@@ -439,7 +439,7 @@ void marshall_LinkedValueListItem(Marshall *m) {
 			}
 		}
 		break;
-      
+
 		case Marshall::ToVALUE:
 		{
 			ItemList *valuelist = (ItemList*)m->item().s_voidp;
@@ -464,13 +464,13 @@ void marshall_LinkedValueListItem(Marshall *m) {
 
 				mrb_value obj = getPointerObject(m->M, p);
 				if(mrb_nil_p(obj)) {
-					smokeruby_object  * o = alloc_smokeruby_object(	m->M, false, 
+					smokeruby_object  * o = alloc_smokeruby_object(	m->M, false,
 																	mi.smoke,
-																	mi.index, 
+																	mi.index,
 																	p );
 					obj = set_obj_info(m->M, className, o);
 				}
-		
+
 				mrb_ary_push(m->M, av, obj);
 			}
 
@@ -483,7 +483,7 @@ void marshall_LinkedValueListItem(Marshall *m) {
 
 		}
 		break;
-      
+
 		default:
 			m->unsupported();
 		break;
@@ -500,28 +500,26 @@ void marshall_Hash(Marshall *m) {
 			m->item().s_voidp = 0;
 			break;
 		}
-		
+
 		QHash<QString, Value*> * hash = new QHash<QString, Value*>;
-		
+
 		// Convert the ruby hash to an array of key/value arrays
-		mrb_value temp = mrb_funcall(m->M, hv, "to_a", 0);
+		mrb_value temp = mrb_hash_keys(m->M, hv);
 
 		for (long i = 0; i < RARRAY_LEN(temp); i++) {
-			mrb_value key = mrb_ary_entry(mrb_ary_entry(temp, i), 0);
-			mrb_value value = mrb_ary_entry(mrb_ary_entry(temp, i), 1);
-			
-			smokeruby_object *o = value_obj_info(m->M, value);
+			mrb_value key = RARRAY_PTR(temp)[i];
+			smokeruby_object *o = value_obj_info(m->M, mrb_hash_get(m->M, hv, key));
 			if( !o || !o->ptr)
 				continue;
 			void * val_ptr = o->ptr;
 			val_ptr = o->smoke->cast(val_ptr, o->classId, o->smoke->idClass(ValueSTR, true).index);
-			
+
 			(*hash)[QString(mrb_string_value_ptr(m->M, key))] = (Value*)val_ptr;
 		}
-	    
+
 		m->item().s_voidp = hash;
 		m->next();
-		
+
 		if (m->cleanup())
 			delete hash;
 	}
@@ -533,16 +531,16 @@ void marshall_Hash(Marshall *m) {
 			*(m->var()) = mrb_nil_value();
 			break;
 	    }
-		
+
 		mrb_value hv = mrb_hash_new(m->M);
-		
+
 		Smoke::ModuleIndex val_mi = Smoke::findClass(ValueSTR);
 	    const char * val_className = qtruby_modules[val_mi.smoke].binding->className(val_mi.index);
-			
+
 		for (QHashIterator<QString, Value*> it(*hash); it.hasNext(); it.next()) {
 			void *val_p = it.value();
 			mrb_value value_obj = getPointerObject(m->M, val_p);
-				
+
 			if (mrb_nil_p(value_obj)) {
 				smokeruby_object *o = (smokeruby_object*)mrb_malloc(m->M, sizeof(smokeruby_object));
 				o->classId = val_mi.index;
@@ -553,10 +551,10 @@ void marshall_Hash(Marshall *m) {
 			}
 			mrb_hash_set(m->M, hv, mrb_str_new_cstr(m->M, ((QString*)&(it.key()))->toLatin1()), value_obj);
         }
-		
+
 		*(m->var()) = hv;
 		m->next();
-		
+
 		if (m->cleanup())
 			delete hash;
 	}
@@ -577,29 +575,27 @@ void marshall_Map(Marshall *m) {
 			m->item().s_voidp = 0;
 			break;
 		}
-		
+
 		QMap<QString, Value> * map = new QMap<QString, Value>;
-		
+
 		// Convert the ruby hash to an array of key/value arrays
-		mrb_value temp = mrb_funcall(m->M, hv, "to_a", 0);
+		mrb_value temp = mrb_hash_keys(m->M, hv);
 
 		for (long i = 0; i < RARRAY_LEN(temp); i++) {
-			mrb_value key = mrb_ary_entry(mrb_ary_entry(temp, i), 0);
-			mrb_value value = mrb_ary_entry(mrb_ary_entry(temp, i), 1);
-			
-			smokeruby_object *o = value_obj_info(m->M, value);
+			mrb_value key = RARRAY_PTR(temp)[i];
+			smokeruby_object *o = value_obj_info(m->M, mrb_hash_get(m->M, hv, key));
 			if (o == 0 || o->ptr == 0) {
 				continue;
 			}
 			void * val_ptr = o->ptr;
 			val_ptr = o->smoke->cast(val_ptr, o->classId, o->smoke->idClass(ValueSTR, true).index);
-			
+
 			(*map)[QString(mrb_string_value_ptr(m->M, key))] = *((Value*)val_ptr);
 		}
-	    
+
 		m->item().s_voidp = map;
 		m->next();
-		
+
 		if (m->cleanup()) {
 			delete map;
 		}
@@ -612,9 +608,9 @@ void marshall_Map(Marshall *m) {
 			*(m->var()) = mrb_nil_value();
 			break;
 		}
-		
+
 		mrb_value hv = mrb_hash_new(m->M);
-		
+
         Smoke::ModuleIndex val_mi = Smoke::findClass(ValueSTR);
         const char * val_className = qtruby_modules[val_mi.smoke].binding->className(val_mi.index);
 		QMapIterator<QString, Value> it(*map);
@@ -622,7 +618,7 @@ void marshall_Map(Marshall *m) {
 			it.next();
 			void *val_p = (void *) &(it.value());
 			mrb_value value_obj = getPointerObject(m->M, val_p);
-				
+
 			if (mrb_nil_p(value_obj)) {
 				smokeruby_object *o = (smokeruby_object*)mrb_malloc(m->M, sizeof(smokeruby_object));
 				o->classId = val_mi.index;
@@ -633,10 +629,10 @@ void marshall_Map(Marshall *m) {
 			}
 			mrb_hash_set(m->M, hv, mrb_str_new_cstr(m->M, ((QString*)&(it.key()))->toLatin1()), value_obj);
         }
-		
+
 		*(m->var()) = hv;
 		m->next();
-		
+
 		if (m->cleanup()) {
 			delete map;
 		}

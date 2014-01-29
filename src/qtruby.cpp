@@ -20,6 +20,8 @@
 #include <QtCore/qhash.h>
 #include <QtCore/qline.h>
 #include <QtCore/qmetaobject.h>
+#include <QtCore/private/qobject_p.h>
+#include <QtCore/private/qmetaobject_p.h>
 #include <QtCore/qobject.h>
 #include <QtCore/qrect.h>
 #include <QtCore/qregexp.h>
@@ -75,11 +77,16 @@
 #include <mruby/proc.h>
 #include <mruby/hash.h>
 
+#include <array>
 #include <regex>
 #include <iostream>
+#include <unordered_map>
 
 #include "marshall_types.h"
 #include "qtruby.h"
+
+mrb_int
+get_mrb_int(mrb_state* M, mrb_value const& v);
 
 extern "C" mrb_value
 mrb_yield_internal(mrb_state *mrb, mrb_value b, int argc, mrb_value *argv, mrb_value self, struct RClass *c);
@@ -87,27 +94,258 @@ mrb_yield_internal(mrb_state *mrb, mrb_value b, int argc, mrb_value *argv, mrb_v
 mrb_value mrb_call_super(mrb_state* M, mrb_value self)
 {
   RClass* sup = M->c->ci->target_class->super;
-  RProc* p = mrb_method_search(M, sup, M->c->ci->mid);
-  if(!p) {
-    p = mrb_method_search(M, sup, mrb_intern_lit(M, "method_missing"));
-  }
-
-  assert(p);
+  RProc* p = mrb_method_search_vm(M, &sup, M->c->ci->mid);
 
   int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
+  if(!p) {
+    p = mrb_method_search_vm(M, &sup, mrb_intern_lit(M, "method_missing"));
+    assert(p);
+    std::vector<mrb_value> args(argc + 1);
+    args[0] = mrb_symbol_value(M->c->ci->mid);
+    std::copy_n(argv, argc, args.begin() + 1);
+    return mrb_yield_internal(M, mrb_obj_value(p), args.size(), args.data(), self, sup);
+  }
+
   return mrb_yield_internal(M, mrb_obj_value(p), argc, argv, self, sup);
 }
 
-static mrb_value module_name(mrb_state* M, mrb_value self) {
+static mrb_value
+module_name(mrb_state* M, mrb_value self)
+{
   switch(mrb_type(self)) {
     case MRB_TT_CLASS:
     case MRB_TT_MODULE:
-      return mrb_str_new_cstr(M, mrb_class_name(M, mrb_class_ptr(self)));
+      return mrb_class_path(M, mrb_class_ptr(self));
     default:
-      return mrb_str_new_cstr(M, mrb_obj_classname(M, self));
+      return mrb_class_path(M, mrb_class(M, self));
   }
+}
+
+typedef Smoke::ModuleIndex ModuleIndex;
+
+static void
+getAllParents(ModuleIndex const& id, std::vector<ModuleIndex>& result)
+{
+  assert(id != Smoke::NullModuleIndex);
+  Smoke* const s = id.smoke;
+  for(Smoke::Index* p = s->inheritanceList + s->classes[id.index].parents; *p; ++p) {
+    result.emplace_back(s, *p);
+
+    getAllParents(ModuleIndex(s, *p), result);
+  }
+}
+
+static auto const remove_operators = [](mrb_state* M, mrb_value const& v) {
+  assert(mrb_symbol_p(v));
+  size_t len;
+  char const* s = mrb_sym2name_len(M, mrb_symbol(v), &len);
+  if(len == 1 or len == 2) {
+    switch(s[0] | (len == 2? s[1] << 8 : 0)) {
+      // These methods are all defined in Qt::Base, even if they aren't supported by a particular
+      // subclass, so remove them to avoid confusion
+      case '%': case '&': case '*': case '+': case '-': case '/':
+      case '<': case '>': case '|': case '~': case '^':
+#define t(f, s) (f | (s << 8))
+      case t('*', '*'): case t('-', '@'): case t('<', '<'):
+      case t('<', '='): case t('>', '='): case t('>', '>'):
+#undef t
+        return false;
+    }
+  }
+  return true;
+};
+
+/*
+	Flags values
+		0					All methods, except enum values and protected non-static methods
+		mf_static			Static methods only
+		mf_enum				Enums only
+		mf_protected		Protected non-static methods only
+*/
+
+#define PUSH_QTRUBY_METHOD                                              \
+		if (	(methodRef.flags & (Smoke::mf_internal|Smoke::mf_ctor|Smoke::mf_dtor)) == 0 \
+				&& strcmp(s->methodNames[methodRef.name], "operator=") != 0 \
+				&& strcmp(s->methodNames[methodRef.name], "operator!=") != 0 \
+				&& strcmp(s->methodNames[methodRef.name], "operator--") != 0 \
+				&& strcmp(s->methodNames[methodRef.name], "operator++") != 0 \
+				&& strncmp(s->methodNames[methodRef.name], "operator ", strlen("operator ")) != 0 \
+				&& (	(flags == 0 && (methodRef.flags & (Smoke::mf_static|Smoke::mf_enum|Smoke::mf_protected)) == 0) \
+						|| (	flags == Smoke::mf_static \
+								&& (methodRef.flags & Smoke::mf_enum) == 0 \
+								&& (methodRef.flags & Smoke::mf_static) == Smoke::mf_static ) \
+						|| (flags == Smoke::mf_enum && (methodRef.flags & Smoke::mf_enum) == Smoke::mf_enum) \
+						|| (	flags == Smoke::mf_protected \
+								&& (methodRef.flags & Smoke::mf_static) == 0 \
+								&& (methodRef.flags & Smoke::mf_protected) == Smoke::mf_protected ) ) ) { \
+			if (strncmp(s->methodNames[methodRef.name], "operator", strlen("operator")) == 0) { \
+				if (op_re.indexIn(s->methodNames[methodRef.name]) != -1) { \
+					mrb_ary_push(M, result, mrb_symbol_value(mrb_intern_cstr(M, (op_re.cap(1) + op_re.cap(2)).toLatin1()))); \
+				} else { \
+					mrb_ary_push(M, result, mrb_symbol_value(mrb_intern_cstr(M, s->methodNames[methodRef.name] + strlen("operator")))); \
+				} \
+			} else if (predicate_re.indexIn(s->methodNames[methodRef.name]) != -1 && methodRef.numArgs == 0) { \
+				mrb_ary_push(M, result, mrb_symbol_value(mrb_intern_cstr(M, (predicate_re.cap(2).toLower() + predicate_re.cap(3) + "?").toLatin1()))); \
+			} else if (set_re.indexIn(s->methodNames[methodRef.name]) != -1 && methodRef.numArgs == 1) { \
+				mrb_ary_push(M, result, mrb_symbol_value(mrb_intern_cstr(M, (set_re.cap(2).toLower() + set_re.cap(3) + "=").toLatin1()))); \
+			} else { \
+				mrb_ary_push(M, result, mrb_symbol_value(mrb_intern_cstr(M, s->methodNames[methodRef.name]))); \
+			}                                                                 \
+		}
+
+              void
+                  findAllMethodNames(mrb_state* M, mrb_value result, ModuleIndex const& classid, int flags)
+{
+	static QRegExp const
+      predicate_re("^(is|has)(.)(.*)"), set_re("^(set)([A-Z])(.*)"),
+      op_re("operator(.*)(([-%~/+|&*])|(>>)|(<<)|(&&)|(\\|\\|)|(\\*\\*))=$");
+
+  if(classid == Smoke::NullModuleIndex) { return; }
+
+  Smoke::Index c = classid.index;
+  Smoke* const s = classid.smoke;
+  if (classid.index > s->numClasses) { return; }
+  if (do_debug & qtdb_calls) qWarning("findAllMethodNames called with classid = %d in module %s", c, s->moduleName());
+  Smoke::Index imax = s->numMethodMaps;
+  Smoke::Index imin = 0, icur = -1, methmin, methmax;
+  methmin = -1; methmax = -1; // kill warnings
+  int icmp = -1;
+
+  while (imax >= imin) {
+    icur = (imin + imax) / 2;
+    icmp = s->leg(s->methodMaps[icur].classId, c);
+    if (icmp == 0) {
+      Smoke::Index pos = icur;
+      while(icur && s->methodMaps[icur-1].classId == c)
+        icur --;
+      methmin = icur;
+      icur = pos;
+      while(icur < imax && s->methodMaps[icur+1].classId == c)
+        icur ++;
+      methmax = icur;
+      break;
+    }
+    if (icmp > 0)
+      imax = icur - 1;
+    else
+      imin = icur + 1;
+  }
+
+  if (icmp == 0) {
+    for (Smoke::Index i=methmin ; i <= methmax ; i++) {
+      Smoke::Index ix= s->methodMaps[i].method;
+      if (ix > 0) {	// single match
+        const Smoke::Method &methodRef = s->methods[ix];
+        PUSH_QTRUBY_METHOD
+            } else {		// multiple match
+        ix = -ix;		// turn into ambiguousMethodList index
+        while (s->ambiguousMethodList[ix]) {
+          const Smoke::Method &methodRef = s->methods[s->ambiguousMethodList[ix]];
+          PUSH_QTRUBY_METHOD
+              ix++;
+        }
+      }
+    }
+  }
+}
+
+static mrb_value
+module_qt_methods(mrb_state* M, mrb_value self)
+{
+  mrb_value meths;
+  mrb_int flags;
+  mrb_bool inc_super = 1;
+  mrb_get_args(M, "Ai|b", &meths, &flags, &inc_super);
+
+  if(mrb_type(self) == MRB_TT_CLASS) { return meths; }
+  assert(mrb_type(self) = MRB_TT_MODULE);
+
+  RClass* klass = mrb_class_ptr(self);
+  ModuleIndex classid = find_pclassid(mrb_class_name(M, klass));
+  for(; classid == Smoke::NullModuleIndex;
+      classid = find_pclassid(mrb_class_name(M, klass))) {
+    klass = klass->super;
+    if(not klass) { return meths; }
+  }
+
+  std::vector<ModuleIndex> ids;
+  if(inc_super) { getAllParents(classid, ids); }
+  ids.push_back(classid);
+
+  for(auto const& i : ids) { findAllMethodNames(M, meths, i, flags); }
+
+  mrb_value* begin = RARRAY_PTR(meths);
+  mrb_value* end = RARRAY_PTR(meths) + RARRAY_LEN(meths);
+  meths = mrb_ary_new_from_values(M, std::remove_if(begin, end, std::bind(remove_operators, M, std::placeholders::_1)) - begin, begin);
+  begin = RARRAY_PTR(meths), end = RARRAY_PTR(meths) + RARRAY_LEN(meths);
+  std::sort(begin, end, [](mrb_value const& lhs, mrb_value const& rhs)
+            { return mrb_symbol(lhs) < mrb_symbol(rhs); });
+  meths = mrb_ary_new_from_values(M, std::unique(begin, end, [](mrb_value const& lhs, mrb_value const& rhs)
+  { return mrb_symbol(lhs) == mrb_symbol(rhs); }) - begin, begin);
+  return meths;
+}
+
+static mrb_value
+qt_base_qt_methods(mrb_state* M, mrb_value self)
+{
+  mrb_value meths; mrb_int flags;
+  mrb_get_args(M, "Ai", &meths, &flags);
+
+  std::vector<ModuleIndex> ids;
+  smokeruby_object* const obj = value_obj_info(M, self);
+  ModuleIndex const classid(obj->smoke, obj->classId);
+  getAllParents(classid, ids);
+  ids.push_back(classid);
+
+  for(auto const& i : ids) { findAllMethodNames(M, meths, i, flags); }
+
+  mrb_value* begin = RARRAY_PTR(meths);
+  mrb_value* end = RARRAY_PTR(meths) + RARRAY_LEN(meths);
+  meths = mrb_ary_new_from_values(
+      M, std::remove_if(begin, end, std::bind(remove_operators, M, std::placeholders::_1)) - begin, begin);
+  begin = RARRAY_PTR(meths), end = RARRAY_PTR(meths) + RARRAY_LEN(meths);
+  std::sort(begin, end, [](mrb_value const& lhs, mrb_value const& rhs)
+            { return mrb_symbol(lhs) < mrb_symbol(rhs); });
+  meths = mrb_ary_new_from_values(M, std::unique(begin, end, [](mrb_value const& lhs, mrb_value const& rhs)
+  { return mrb_symbol(lhs) == mrb_symbol(rhs); }) - begin, begin);
+  return meths;
+}
+
+static mrb_value
+qt_base_ancestors(mrb_state* M, mrb_value self)
+{
+  RClass* klass = mrb_class_ptr(self);
+  ModuleIndex classid = find_pclassid(mrb_class_name(M, klass));
+  for(; classid == Smoke::NullModuleIndex;
+      classid = find_pclassid(mrb_class_name(M, klass))) {
+    klass = klass->super;
+    if(not klass) { return mrb_call_super(M, self); }
+  }
+
+  assert(mrb_type(self) == MRB_TT_CLASS);
+
+  mrb_value const Classes = mrb_mod_cv_get(M, qt_internal_module(M), mrb_intern_lit(M, "Classes"));
+
+  mrb_value klasses = mrb_call_super(M, self);
+  std::vector<ModuleIndex> ids;
+  getAllParents(classid, ids);
+  for(auto const& i : ids) {
+    mrb_ary_push(M, klasses, mrb_hash_get(
+        M, Classes, mrb_symbol_value(mrb_intern_cstr(M, i.smoke->classes[i.index].className))));
+  }
+  mrb_ary_push(M, klasses, self);
+
+  mrb_value* begin = RARRAY_PTR(klasses);
+  mrb_value* end = RARRAY_PTR(klasses) + RARRAY_LEN(klasses);
+  klasses = mrb_ary_new_from_values(M, std::remove_if(begin, end, [M](mrb_value const& v)
+  { return mrb_class_ptr(v) == qt_base_class(M); }) - begin, begin);
+  std::sort(begin, end, [](mrb_value const& lhs, mrb_value const& rhs)
+            { return mrb_class_ptr(lhs) < mrb_class_ptr(rhs); });
+  klasses = mrb_ary_new_from_values(M, std::unique(begin, end, [](mrb_value const& lhs, mrb_value const& rhs)
+  { return mrb_symbol(lhs) == mrb_symbol(rhs); }) - begin, begin);
+  return klasses;
 }
 
 extern bool qRegisterResourceData(int, const unsigned char *, const unsigned char *, const unsigned char *);
@@ -157,8 +395,7 @@ inspectProperty(QMetaProperty property, const char * name, QVariant & value)
 	}
 
 	switch (value.type()) {
-	case QVariant::String:
-	{
+	case QVariant::String: {
 		if (value.toString().isNull()) {
 			return QString(" %1=nil").arg(name);
 		} else {
@@ -166,8 +403,7 @@ inspectProperty(QMetaProperty property, const char * name, QVariant & value)
 		}
 	}
 
-	case QVariant::Bool:
-	{
+	case QVariant::Bool: {
 		QString rubyName;
 		QRegExp name_re("^(is|has)(.)(.*)");
 
@@ -181,24 +417,15 @@ inspectProperty(QMetaProperty property, const char * name, QVariant & value)
 	}
 
 	case QVariant::Color:
-	{
-		QColor c = value.value<QColor>();
-		return QString(" %1=#<Qt::Color:0x0 %2>").arg(name).arg(c.name());
-	}
+		return QString(" %1=#<Qt::Color:0x0 %2>").arg(name).arg(value.value<QColor>().name());
 
 	case QVariant::Cursor:
-	{
-		QCursor c = value.value<QCursor>();
-		return QString(" %1=#<Qt::Cursor:0x0 shape=%2>").arg(name).arg(c.shape());
-	}
+		return QString(" %1=#<Qt::Cursor:0x0 shape=%2>").arg(name).arg(value.value<QCursor>().shape());
 
 	case QVariant::Double:
-	{
 		return QString(" %1=%2").arg(name).arg(value.toDouble());
-	}
 
-	case QVariant::Font:
-	{
+	case QVariant::Font: {
 		QFont f = value.value<QFont>();
 		return QString(	" %1=#<Qt::Font:0x0 family=%2, pointSize=%3, weight=%4, italic=%5, bold=%6, underline=%7, strikeOut=%8>")
 									.arg(name)
@@ -211,8 +438,7 @@ inspectProperty(QMetaProperty property, const char * name, QVariant & value)
 									.arg(f.strikeOut() ? "true" : "false");
 	}
 
-	case QVariant::Line:
-	{
+	case QVariant::Line: {
 		QLine l = value.toLine();
 		return QString(" %1=#<Qt::Line:0x0 x1=%2, y1=%3, x2=%4, y2=%5>")
 						.arg(name)
@@ -222,8 +448,7 @@ inspectProperty(QMetaProperty property, const char * name, QVariant & value)
 						.arg(l.y2());
 	}
 
-	case QVariant::LineF:
-	{
+	case QVariant::LineF: {
 		QLineF l = value.toLineF();
 		return QString(" %1=#<Qt::LineF:0x0 x1=%2, y1=%3, x2=%4, y2=%5>")
 						.arg(name)
@@ -233,52 +458,45 @@ inspectProperty(QMetaProperty property, const char * name, QVariant & value)
 						.arg(l.y2());
 	}
 
-	case QVariant::Point:
-	{
+	case QVariant::Point: {
 		QPoint p = value.toPoint();
 		return QString(" %1=#<Qt::Point:0x0 x=%2, y=%3>").arg(name).arg(p.x()).arg(p.y());
 	}
 
-	case QVariant::PointF:
-	{
+	case QVariant::PointF: {
 		QPointF p = value.toPointF();
 		return QString(" %1=#<Qt::PointF:0x0 x=%2, y=%3>").arg(name).arg(p.x()).arg(p.y());
 	}
 
-	case QVariant::Rect:
-	{
+	case QVariant::Rect: {
 		QRect r = value.toRect();
 		return QString(" %1=#<Qt::Rect:0x0 left=%2, right=%3, top=%4, bottom=%5>")
 									.arg(name)
 									.arg(r.left()).arg(r.right()).arg(r.top()).arg(r.bottom());
 	}
 
-	case QVariant::RectF:
-	{
+	case QVariant::RectF: {
 		QRectF r = value.toRectF();
 		return QString(" %1=#<Qt::RectF:0x0 left=%2, right=%3, top=%4, bottom=%5>")
 									.arg(name)
 									.arg(r.left()).arg(r.right()).arg(r.top()).arg(r.bottom());
 	}
 
-	case QVariant::Size:
-	{
+	case QVariant::Size: {
 		QSize s = value.toSize();
 		return QString(" %1=#<Qt::Size:0x0 width=%2, height=%3>")
 									.arg(name)
 									.arg(s.width()).arg(s.height());
 	}
 
-	case QVariant::SizeF:
-	{
+	case QVariant::SizeF: {
 		QSizeF s = value.toSizeF();
 		return QString(" %1=#<Qt::SizeF:0x0 width=%2, height=%3>")
 									.arg(name)
 									.arg(s.width()).arg(s.height());
 	}
 
-	case QVariant::SizePolicy:
-	{
+	case QVariant::SizePolicy: {
 		QSizePolicy s = value.value<QSizePolicy>();
 		return QString(" %1=#<Qt::SizePolicy:0x0 horizontalPolicy=%2, verticalPolicy=%3>")
 									.arg(name)
@@ -292,9 +510,7 @@ inspectProperty(QMetaProperty property, const char * name, QVariant & value)
 	case QVariant::Palette:
 	case QVariant::Pixmap:
 	case QVariant::Region:
-	{
 		return QString(" %1=#<Qt::%2:0x0>").arg(name).arg(value.typeName() + 1);
-	}
 
 	default:
 		return QString(" %1=%2").arg(name)
@@ -362,7 +578,7 @@ pretty_print_qobject(mrb_state* M, mrb_value self)
 
 	// Start with #<Qt::HBoxLayout:0x30139030>
 	// Drop the closing '>'
-	mrb_value inspect_str = mrb_funcall(M, self, "to_s", 0, 0);
+	mrb_value inspect_str = mrb_funcall(M, self, "to_s", 0);
 	mrb_str_resize(M, inspect_str, RSTRING_LEN(inspect_str) - 1);
 	mrb_funcall(M, pp, "text", 1, inspect_str);
 	mrb_funcall(M, pp, "breakable", 0);
@@ -377,7 +593,7 @@ pretty_print_qobject(mrb_state* M, mrb_value self)
 		QString parentInspectString;
 		mrb_value obj = getPointerObject(M, qobject->parent());
 		if (not mrb_nil_p(obj)) {
-			mrb_value parent_inspect_str = mrb_funcall(M, obj, "to_s", 0, 0);
+			mrb_value parent_inspect_str = mrb_funcall(M, obj, "to_s", 0);
 			mrb_str_resize(M, parent_inspect_str, RSTRING_LEN(parent_inspect_str) - 1);
 			parentInspectString = mrb_string_value_ptr(M, parent_inspect_str);
 		} else {
@@ -481,20 +697,17 @@ qabstract_item_model_rowcount(mrb_state* M, mrb_value self)
   int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
-    smokeruby_object *o = value_obj_info(M, self);
-	QAbstractItemModel * model = (QAbstractItemModel *) o->ptr;
-	if (argc == 0) {
-		return mrb_fixnum_value(model->rowCount());
+	QAbstractItemModel * model = (QAbstractItemModel *) value_obj_info(M, self)->ptr;
+  switch(argc) {
+    case 0: return mrb_fixnum_value(model->rowCount());
+    case 1: {
+      QModelIndex * modelIndex = (QModelIndex *) value_obj_info(M, argv[0])->ptr;
+      return mrb_fixnum_value(model->rowCount(*modelIndex));
+    }
+    default:
+      mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
+      return mrb_nil_value();
 	}
-
-	if (argc == 1) {
-		smokeruby_object * mi = value_obj_info(M, argv[0]);
-		QModelIndex * modelIndex = (QModelIndex *) mi->ptr;
-		return mrb_fixnum_value(model->rowCount(*modelIndex));
-	}
-
-	mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
-  return mrb_nil_value();
 }
 
 static mrb_value
@@ -503,74 +716,51 @@ qabstract_item_model_columncount(mrb_state* M, mrb_value self)
   int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
-    smokeruby_object *o = value_obj_info(M, self);
-	QAbstractItemModel * model = (QAbstractItemModel *) o->ptr;
-	if (argc == 0) {
-		return mrb_fixnum_value(model->columnCount());
+	QAbstractItemModel * model = (QAbstractItemModel *) value_obj_info(M, self)->ptr;
+  switch(argc) {
+    case 0: return mrb_fixnum_value(model->columnCount());
+    case 1: return mrb_fixnum_value(
+        model->columnCount(*((QModelIndex *) value_obj_info(M, argv[0])->ptr)));
+    default:
+      mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
+      return mrb_nil_value();
 	}
-
-	if (argc == 1) {
-		smokeruby_object * mi = value_obj_info(M, argv[0]);
-		QModelIndex * modelIndex = (QModelIndex *) mi->ptr;
-		return mrb_fixnum_value(model->columnCount(*modelIndex));
-	}
-
-	mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
-  return mrb_nil_value();
 }
 
 static mrb_value
 qabstract_item_model_data(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
+  mrb_value model_index_value; mrb_int idx;
+  int const argc = mrb_get_args(M, "o|i", &model_index_value, &idx);
 
-    smokeruby_object * o = value_obj_info(M, self);
+  smokeruby_object* o = value_obj_info(M, self);
 	QAbstractItemModel * model = (QAbstractItemModel *) o->ptr;
-    smokeruby_object * mi = value_obj_info(M, argv[0]);
-	QModelIndex * modelIndex = (QModelIndex *) mi->ptr;
+	QModelIndex * modelIndex = (QModelIndex *) value_obj_info(M, model_index_value)->ptr;
 	QVariant value;
-	if (argc == 1) {
-		value = model->data(*modelIndex);
-	} else if (argc == 2) {
-		value = model->data(*modelIndex, mrb_fixnum(mrb_funcall(M, argv[1], "to_i", 0)));
-	} else {
-		mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
-	}
+  switch(argc) {
+    case 1: value = model->data(*modelIndex); break;
+    case 2: value = model->data(*modelIndex, idx); break;
+    default: assert(false); return mrb_nil_value();
+  }
 
-
-	smokeruby_object  * result = alloc_smokeruby_object(M,	true,
-															o->smoke,
-															o->smoke->findClass("QVariant").index,
-															new QVariant(value) );
-	return set_obj_info(M, "Qt::Variant", result);
+	return set_obj_info(M, "Qt::Variant", alloc_smokeruby_object(
+      M,	true, o->smoke, o->smoke->findClass("QVariant").index, new QVariant(value)));
 }
 
 static mrb_value
 qabstract_item_model_setdata(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
+  mrb_value model_index_value, value; mrb_int idx;
+  int const argc = mrb_get_args(M, "oo|i", &model_index_value, &value, &idx);
 
-    smokeruby_object *o = value_obj_info(M, self);
-	QAbstractItemModel * model = (QAbstractItemModel *) o->ptr;
-    smokeruby_object * mi = value_obj_info(M, argv[0]);
-	QModelIndex * modelIndex = (QModelIndex *) mi->ptr;
-    smokeruby_object * v = value_obj_info(M, argv[1]);
-	QVariant * variant = (QVariant *) v->ptr;
-
-	if (argc == 2) {
-		return mrb_bool_value(model->setData(*modelIndex, *variant));
-	}
-
-	if (argc == 3) {
-		return mrb_bool_value(model->setData(
-        *modelIndex, *variant,
-        mrb_fixnum(mrb_funcall(M, argv[2], "to_i", 0))));
-	}
-
-	mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
-  return mrb_nil_value();
+	QAbstractItemModel * model = (QAbstractItemModel *) value_obj_info(M, self)->ptr;
+	QModelIndex * modelIndex = (QModelIndex *) value_obj_info(M, model_index_value)->ptr;
+	QVariant * variant = (QVariant *) value_obj_info(M, value)->ptr;
+  switch(argc) {
+    case 2: return mrb_bool_value(model->setData(*modelIndex, *variant));
+    case 3: return mrb_bool_value(model->setData(*modelIndex, *variant, idx));
+    default: assert(false); return mrb_nil_value();
+  }
 }
 
 static mrb_value
@@ -578,103 +768,61 @@ qabstract_item_model_flags(mrb_state* M, mrb_value self)
 {
   mrb_value model_index;
   mrb_get_args(M, "o", &model_index);
-    smokeruby_object *o = value_obj_info(M, self);
-	QAbstractItemModel * model = (QAbstractItemModel *) o->ptr;
-    smokeruby_object * mi = value_obj_info(M, model_index);
-	const QModelIndex * modelIndex = (const QModelIndex *) mi->ptr;
+	QAbstractItemModel * model = (QAbstractItemModel *) value_obj_info(M, self)->ptr;
+	const QModelIndex * modelIndex = (const QModelIndex *) value_obj_info(M, model_index)->ptr;
 	return mrb_fixnum_value((int) model->flags(*modelIndex));
 }
 
 static mrb_value
 qabstract_item_model_insertrows(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
-
-    smokeruby_object *o = value_obj_info(M, self);
-	QAbstractItemModel * model = (QAbstractItemModel *) o->ptr;
-
-	if (argc == 2) {
-		return mrb_bool_value(model->insertRows(mrb_fixnum(argv[0]), mrb_fixnum(argv[1])));
-	}
-
-	if (argc == 3) {
-    	smokeruby_object * mi = value_obj_info(M, argv[2]);
-		const QModelIndex * modelIndex = (const QModelIndex *) mi->ptr;
-		return mrb_bool_value(model->insertRows(mrb_fixnum(argv[0]), mrb_fixnum(argv[1]), *modelIndex));
-	}
-
-	mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
-  return mrb_nil_value();
+	QAbstractItemModel * model = (QAbstractItemModel *) value_obj_info(M, self)->ptr;
+  mrb_int a, b; mrb_value idx;
+  switch(mrb_get_args(M, "ii|o", &a, &b, &idx)) {
+    case 2: return mrb_bool_value(model->insertRows(a, b));
+    case 3: return mrb_bool_value(model->insertRows(
+        a, b, *((const QModelIndex *) value_obj_info(M, idx)->ptr)));
+    default: assert(false); return mrb_nil_value();
+  }
 }
 
 static mrb_value
 qabstract_item_model_insertcolumns(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
-
-    smokeruby_object *o = value_obj_info(M, self);
-	QAbstractItemModel * model = (QAbstractItemModel *) o->ptr;
-
-	if (argc == 2) {
-		return mrb_bool_value(model->insertColumns(mrb_fixnum(argv[0]), mrb_fixnum(argv[1])));
+  mrb_int a, b; mrb_value idx;
+	QAbstractItemModel * model = (QAbstractItemModel *) value_obj_info(M, self)->ptr;
+  switch(mrb_get_args(M, "ii|o", &a, &b, &idx)) {
+    case 2: return mrb_bool_value(model->insertColumns(a, b));
+    case 3: return mrb_bool_value(model->insertColumns(
+        a, b, *((const QModelIndex *) value_obj_info(M, idx)->ptr)));
+    default: assert(false); return mrb_nil_value();
 	}
-
-	if (argc == 3) {
-    	smokeruby_object * mi = value_obj_info(M, argv[2]);
-		const QModelIndex * modelIndex = (const QModelIndex *) mi->ptr;
-		return mrb_bool_value(model->insertColumns(mrb_fixnum(argv[0]), mrb_fixnum(argv[1]), *modelIndex));
-	}
-
-	mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
-  return mrb_nil_value();
 }
 
 static mrb_value
 qabstract_item_model_removerows(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
-
-    smokeruby_object *o = value_obj_info(M, self);
-	QAbstractItemModel * model = (QAbstractItemModel *) o->ptr;
-
-	if (argc == 2) {
-		return mrb_bool_value(model->removeRows(mrb_fixnum(argv[0]), mrb_fixnum(argv[1])));
-	}
-
-	if (argc == 3) {
-    	smokeruby_object * mi = value_obj_info(M, argv[2]);
-		const QModelIndex * modelIndex = (const QModelIndex *) mi->ptr;
-		return mrb_bool_value(model->removeRows(mrb_fixnum(argv[0]), mrb_fixnum(argv[1]), *modelIndex));
-	}
-
-	mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
-  return mrb_nil_value();
+  mrb_int a, b; mrb_value idx;
+	QAbstractItemModel * model = (QAbstractItemModel *) value_obj_info(M, self)->ptr;
+  switch(mrb_get_args(M, "ii|o", &a, &b, &idx)) {
+    case 2: return mrb_bool_value(model->removeRows(a, b));
+    case 3: return mrb_bool_value(model->removeRows(
+        a, b, *((const QModelIndex *) value_obj_info(M, idx)->ptr)));
+    default: assert(false); return mrb_nil_value();
+  }
 }
 
 static mrb_value
 qabstract_item_model_removecolumns(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
-
-    smokeruby_object *o = value_obj_info(M, self);
-	QAbstractItemModel * model = (QAbstractItemModel *) o->ptr;
-
-	if (argc == 2) {
-		return mrb_bool_value(model->removeColumns(mrb_fixnum(argv[0]), mrb_fixnum(argv[1])));
-	}
-
-	if (argc == 3) {
-    	smokeruby_object * mi = value_obj_info(M, argv[2]);
-		const QModelIndex * modelIndex = (const QModelIndex *) mi->ptr;
-		return mrb_bool_value(model->removeRows(mrb_fixnum(argv[0]), mrb_fixnum(argv[1]), *modelIndex));
-	}
-
-	mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
-  return mrb_nil_value();
+	QAbstractItemModel * model = (QAbstractItemModel *) value_obj_info(M, self)->ptr;
+  mrb_int a, b; mrb_value idx;
+  switch(mrb_get_args(M, "ii|o", &a, &b, &idx)) {
+    case 2: return mrb_bool_value(model->removeColumns(a, b));
+    case 3: return mrb_bool_value(model->removeColumns(
+        a, b, *((const QModelIndex *) value_obj_info(M, idx)->ptr)));
+    default: assert(false); return mrb_nil_value();
+  }
 }
 
 // There is a QByteArray operator method in the Smoke lib that takes a QString
@@ -685,25 +833,21 @@ qbytearray_append(mrb_state* M, mrb_value self)
 {
   mrb_value str;
   mrb_get_args(M, "o", &str);
-    smokeruby_object *o = value_obj_info(M, self);
-	QByteArray * bytes = (QByteArray *) o->ptr;
-	(*bytes) += (const char *)mrb_string_value_ptr(M, str);
+	(*((QByteArray *) value_obj_info(M, self)->ptr)) += (const char *)mrb_string_value_ptr(M, str);
 	return self;
 }
 
 static mrb_value
 qbytearray_data(mrb_state* M, mrb_value self)
 {
-  smokeruby_object *o = value_obj_info(M, self);
-  QByteArray * bytes = (QByteArray *) o->ptr;
+  QByteArray * bytes = (QByteArray *) value_obj_info(M, self)->ptr;
   return mrb_str_new(M, bytes->data(), bytes->size());
 }
 
 static mrb_value
 qimage_bits(mrb_state* M, mrb_value self)
 {
-  smokeruby_object *o = value_obj_info(M, self);
-  QImage * image = static_cast<QImage *>(o->ptr);
+  QImage * image = static_cast<QImage *>(value_obj_info(M, self)->ptr);
   const uchar * bytes = image->bits();
   return mrb_str_new(M, (const char *) bytes, image->numBytes());
 }
@@ -713,8 +857,7 @@ qimage_scan_line(mrb_state* M, mrb_value self)
 {
   mrb_int ix;
   mrb_get_args(M, "i", &ix);
-  smokeruby_object *o = value_obj_info(M, self);
-  QImage * image = static_cast<QImage *>(o->ptr);
+  QImage * image = static_cast<QImage *>(value_obj_info(M, self)->ptr);
   const uchar * bytes = image->scanLine(ix);
   return mrb_str_new(M, (const char *) bytes, image->bytesPerLine());
 }
@@ -723,36 +866,28 @@ qimage_scan_line(mrb_state* M, mrb_value self)
 static mrb_value
 qdbusargument_endarraywrite(mrb_state* M, mrb_value self)
 {
-    smokeruby_object *o = value_obj_info(M, self);
-	QDBusArgument * arg = (QDBusArgument *) o->ptr;
-	arg->endArray();
+	((QDBusArgument *) value_obj_info(M, self)->ptr)->endArray();
 	return self;
 }
 
 static mrb_value
 qdbusargument_endmapwrite(mrb_state* M, mrb_value self)
 {
-    smokeruby_object *o = value_obj_info(M, self);
-	QDBusArgument * arg = (QDBusArgument *) o->ptr;
-	arg->endMap();
+	((QDBusArgument *) value_obj_info(M, self)->ptr)->endMap();
 	return self;
 }
 
 static mrb_value
 qdbusargument_endmapentrywrite(mrb_state* M, mrb_value self)
 {
-    smokeruby_object *o = value_obj_info(M, self);
-	QDBusArgument * arg = (QDBusArgument *) o->ptr;
-	arg->endMapEntry();
+	((QDBusArgument *) value_obj_info(M, self)->ptr)->endMapEntry();
 	return self;
 }
 
 static mrb_value
 qdbusargument_endstructurewrite(mrb_state* M, mrb_value self)
 {
-    smokeruby_object *o = value_obj_info(M, self);
-	QDBusArgument * arg = (QDBusArgument *) o->ptr;
-	arg->endStructure();
+	((QDBusArgument *) value_obj_info(M, self)->ptr)->endStructure();
 	return self;
 }
 
@@ -817,7 +952,7 @@ static Smoke::Index drawlines_line_vector = 0;
 			return mrb_call_super(M, self);
 		}
 
-		QtRuby::MethodCall c(M, qtcore_Smoke, _current_method.index, self, argv, argc - 1);
+		QtRuby::MethodCall c(M, _current_method, self, argv, argc - 1);
 		c.next();
 		return self;
 	}
@@ -866,7 +1001,7 @@ static Smoke::Index drawlines_rect_vector = 0;
 			return mrb_call_super(M, self);
 		}
 
-		QtRuby::MethodCall c(M, qtcore_Smoke, _current_method.index, self, argv, argc-1);
+		QtRuby::MethodCall c(M, _current_method, self, argv, argc-1);
 		c.next();
 		return self;
 	}
@@ -881,6 +1016,9 @@ qabstractitemmodel_createindex(mrb_state* M, mrb_value self)
   mrb_get_args(M, "*", &argv, &argc);
 
 	if (argc == 2 || argc == 3) {
+    mrb_int a, b; mrb_value ptr = mrb_nil_value();
+    mrb_get_args(M, "ii|o", &a, &b, &ptr);
+
 		smokeruby_object * o = value_obj_info(M, self);
 		Smoke::ModuleIndex nameId = o->smoke->idMethodName("createIndex$$$");
 		Smoke::ModuleIndex meth = o->smoke->findMethod(qtcore_Smoke->findClass("QAbstractItemModel"), nameId);
@@ -888,23 +1026,20 @@ qabstractitemmodel_createindex(mrb_state* M, mrb_value self)
 		i = -i;		// turn into ambiguousMethodList index
 		while (o->smoke->ambiguousMethodList[i] != 0) {
 			if (	qstrcmp(	o->smoke->types[o->smoke->argumentList[o->smoke->methods[o->smoke->ambiguousMethodList[i]].args + 2]].name,
-							"void*" ) == 0 )
+                      "void*" ) == 0 )
 			{
-	    		const Smoke::Method &m = o->smoke->methods[o->smoke->ambiguousMethodList[i]];
+        const Smoke::Method &m = o->smoke->methods[o->smoke->ambiguousMethodList[i]];
 				Smoke::ClassFn fn = o->smoke->classes[m.classId].classFn;
 				Smoke::StackItem stack[4];
-				stack[1].s_int = mrb_fixnum(argv[0]);
-				stack[2].s_int = mrb_fixnum(argv[1]);
-				if (argc == 2) {
-					stack[3].s_voidp = NULL;
-				} else {
-					stack[3].s_voidp = mrb_voidp(argv[2]);
-				}
+				stack[1].s_int = a;
+				stack[2].s_int = b;
+        assert(mrb_nil_p(ptr) or mrb_type(argv[2]) == MRB_TT_VOIDP);
+        stack[3].s_voidp = mrb_nil_p(ptr)? NULL : mrb_voidp(argv[2]);
 				(*fn)(m.method, o->ptr, stack);
 				smokeruby_object  * result = alloc_smokeruby_object(	M, true,
-																		o->smoke,
-																		o->smoke->idClass("QModelIndex").index,
-																		stack[0].s_voidp );
+                                                              o->smoke,
+                                                              o->smoke->idClass("QModelIndex").index,
+                                                              stack[0].s_voidp );
 
 				return set_obj_info(M, "Qt::ModelIndex", result);
 			}
@@ -945,15 +1080,383 @@ qitemselection_at(mrb_state* M, mrb_value self)
 static mrb_value
 qitemselection_count(mrb_state* M, mrb_value self)
 {
-    smokeruby_object *o = value_obj_info(M, self);
-	QItemSelection * item = (QItemSelection *) o->ptr;
-	return mrb_fixnum_value(item->count());
+	return mrb_fixnum_value(((QItemSelection *) value_obj_info(M, self)->ptr)->count());
+}
+
+RClass* get_class(mrb_state* M, mrb_value const& self) {
+  return mrb_type(self) == MRB_TT_MODULE or mrb_type(self) == MRB_TT_CLASS
+      ? mrb_class_ptr(self) : mrb_class(M, self);
+}
+
+struct MetaInfo {
+  std::unordered_map<std::string, unsigned> methods;
+  std::unordered_map<std::string, std::string> method_tags;
+  std::vector<std::pair<std::string, std::string>> classinfos;
+
+  bool dirty = true, dbus = false;
+
+  QMetaObject meta_object;
+
+  std::string stringdata;
+  std::vector<uint> data;
+
+  static unsigned stringdata_offset(std::unordered_map<std::string, unsigned>& table,
+                                    std::string& str, char const* name) {
+    auto const i = table.find(name);
+    if(i != table.end()) { return i->second; }
+
+    unsigned const ret = str.size(); // offset
+    str += name;
+    str += std::string("\0", 1);
+    table[name] = ret;
+    return ret;
+  }
+
+  void print_debug_message() const {
+    QMetaObject const& meta = meta_object;
+    qWarning("metaObject() superdata: %p %s", meta.d.superdata, meta.d.superdata->className());
+    auto const& priv_meta = *reinterpret_cast<QMetaObjectPrivate const*>(data.data());
+    assert(&priv_meta);
+
+    qWarning(
+        " // content:\n"
+        "       %d,       // revision\n"
+        "       %d,       // classname\n"
+        "       %d,   %d, // classinfo\n"
+        "       %d,   %d, // methods\n"
+        "       %d,   %d, // properties\n"
+        "       %d,   %d, // enums/sets",
+        priv_meta.revision,
+        priv_meta.className,
+        priv_meta.classInfoCount, priv_meta.classInfoData,
+        priv_meta.methodCount, priv_meta.methodData,
+        priv_meta.propertyCount, priv_meta.propertyData,
+        priv_meta.enumeratorCount, priv_meta.enumeratorData);
+
+    if (priv_meta.classInfoCount > 0) {
+      int const s = priv_meta.classInfoData;
+      qWarning(" // classinfo: key, value");
+      for (uint j = 0; j < data[2]; j++) {
+        qWarning("      %d,    %d", data[s + (j * 2)], data[s + (j * 2) + 1]);
+      }
+    }
+
+    for (int j = 0; j < priv_meta.methodCount; j++) {
+      int const s = priv_meta.methodData;
+      qWarning("      %d,   %d,   %d,   %d, 0x%2.2x // %s: signature, parameters, type, tag, flags",
+               data[s + (j * 5)], data[s + (j * 5) + 1], data[s + (j * 5) + 2],
+               data[s + (j * 5) + 3], data[s + (j * 5) + 4],
+               (data[s + (j * 5) + 4] & MethodSignal)? "signal" : "slot");
+    }
+
+    for (int j = 0; j < priv_meta.propertyCount; j++) {
+      int const s = priv_meta.propertyData;
+      qWarning("      %d,   %d,   0x%8.8x, // properties: name, type, flags",
+               data[s + (j * 3)], data[s + (j * 3) + 1], data[s + (j * 3) + 2]);
+    }
+
+    /* enum/set
+    s += (data[6] * 3);
+    for (int i = s; i < count; i++) {
+      qWarning("\n       %d        // eod\n", data[i]);
+    }
+    */
+
+    qWarning("qt_meta_stringdata:");
+    std::string str = stringdata.data();
+    for(size_t idx = 0; idx < stringdata.size();
+        idx += str.size() + 1, str = stringdata.data() + idx) {
+      qWarning("  offset: %d, string: \"%s\"", unsigned(idx), str.c_str());
+    }
+  }
+
+  void update(mrb_state* M, mrb_value const& self) {
+    if(not dirty) { return; }
+
+    RClass* const cls = get_class(M, self);
+    RClass* const parent = cls->super;
+    QMetaObject const* const superdata = (QMetaObject*)value_obj_info(
+        M, mrb_funcall(M, mrb_obj_value(parent), "staticMetaObject", 0))->ptr;
+    assert(superdata);
+
+    std::unordered_map<std::string, unsigned> table;
+    std::string str;
+    std::vector<unsigned> d = {
+      4, // revision
+      stringdata_offset(table, str, mrb_class_name(M, cls)), // classname
+      static_cast<unsigned>(classinfos.size()), 0, // classinfo
+      static_cast<unsigned>(methods.size()), 0, // method -> signal/slot
+      0, 0, // property
+      0, 0, // enumerator, set
+      0, 0, // constructor (revision 2)
+      0,  // flags (revision 3)
+
+      // signals count (revision 4)
+      // count signals by checking Qt::MethodSignal flag
+      unsigned(std::count_if(methods.begin(), methods.end(),
+                             [](std::pair<std::string, unsigned> const& i) {
+                               return bool(i.second & MethodSignal);
+                             })),
+    };
+    assert(d.size() == 14); // in revision 4 it must be 14
+    d[3] = classinfos.empty()? 0 : d.size(); // classinfos offset
+    d[5] = d.size() + 2 * classinfos.size(); // methods offset
+
+    unsigned const empty_str = stringdata_offset(table, str, "");
+
+    // classinfo
+    for(auto const& i : classinfos) {
+      d.push_back(stringdata_offset(table, str, i.first.c_str()));
+      d.push_back(stringdata_offset(table, str, i.second.c_str()));
+    }
+
+    // method
+    for(auto const& i : methods) {
+      d.push_back(stringdata_offset(table, str, i.first.c_str())); // signature
+      d.push_back(empty_str); // parameters (if empty string is passed paramter types is used instead)
+      d.push_back(empty_str); // return type (empty string means void or not defined)
+
+      // method tag string
+      auto const tag = method_tags.find(i.first);
+      d.push_back(tag == method_tags.end()
+                     ? empty_str : stringdata_offset(table, str, tag->second.c_str()));
+
+      // method flags (use special method for dbus interface)
+      unsigned const dbus_method_flags = MethodScriptable | AccessPublic;
+      d.push_back(dbus
+                  ? (dbus_method_flags | ((i.second & MethodSignal)? MethodSignal : MethodSlot))
+                  : i.second);
+    }
+
+    d.push_back(0); // end of data
+
+    stringdata.swap(str);
+    data.swap(d);
+
+    meta_object = { { superdata, stringdata.c_str(), data.data(), NULL } };
+
+    dirty = false;
+
+    if(do_debug & qtdb_gc) { print_debug_message(); }
+  }
+};
+
+static mrb_value
+qt_metacall(mrb_state* M, mrb_value self)
+{
+	// Arguments: QMetaObject::Call _c, int id, void ** _o
+  mrb_int calltype, id; mrb_value args;
+  mrb_get_args(M, "iio", &calltype, &id, &args);
+	QMetaObject::Call _c = (QMetaObject::Call) calltype;
+	// Note that for a slot with no args and no return type,
+	// it isn't an error to get a NULL value of _o here.
+  assert(mrb_voidp_p(args));
+	void ** const _o = (void**)mrb_voidp(args);
+
+	// Assume the target slot is a C++ one
+	smokeruby_object *o = value_obj_info(M, self);
+	Smoke::ModuleIndex meth =o->smoke->findMethod(
+      Smoke::ModuleIndex(o->smoke, o->classId), o->smoke->idMethodName("qt_metacall$$?"));
+	assert(meth != Smoke::NullModuleIndex); // qt_metacall must be found
+
+	const Smoke::Method &m = meth.smoke->methods[meth.smoke->methodMaps[meth.index].method];
+  Smoke::ClassFn fn = meth.smoke->classes[m.classId].classFn;
+  Smoke::StackItem i[4];
+  i[1].s_enum = _c;
+  i[2].s_int = id;
+  i[3].s_voidp = _o;
+  (*fn)(m.method, o->ptr, i);
+  int ret = i[0].s_int;
+  if (ret < 0) { return mrb_fixnum_value(ret); }
+  if (_c != QMetaObject::InvokeMetaMethod) { return mrb_fixnum_value(id); }
+
+	QObject * qobj = (QObject *) o->smoke->cast(o->ptr, o->classId, o->smoke->idClass("QObject").index);
+	// get obj metaobject with a virtual call
+	const QMetaObject *metaobject = qobj->metaObject();
+
+	// get method/property count
+	int const count = _c == QMetaObject::InvokeMetaMethod
+                    ? metaobject->methodCount() : metaobject->propertyCount();
+
+	if (_c == QMetaObject::InvokeMetaMethod) {
+		QMetaMethod method = metaobject->method(id);
+
+		if (method.methodType() == QMetaMethod::Signal) {
+			metaobject->activate(qobj, id, _o);
+			return mrb_fixnum_value(id - count);
+		}
+
+		QList<MocArgument*> mocArgs =
+        get_moc_arguments(M, o->smoke, method.typeName(), method.parameterTypes());
+
+		QString name(method.signature());
+    static QRegExp rx("\\(.*");
+		name.replace(rx, "");
+		QtRuby::InvokeSlot slot(M, self, mrb_intern_cstr(M, name.toLatin1()), mocArgs, _o);
+		slot.next();
+	}
+
+	return mrb_fixnum_value(id - count);
+}
+
+static mrb_value metaObject(mrb_state* M, mrb_value self);
+static mrb_value staticMetaObject(mrb_state* M, mrb_value self);
+
+MetaInfo& get_meta_info(mrb_state* M, RClass* cls, bool mark_dirty = true) {
+  static std::unordered_map<RClass*, MetaInfo> meta_info_table_;
+
+  if(meta_info_table_.find(cls) == meta_info_table_.end()) {
+    assert(mark_dirty);
+    mrb_define_method(M, cls, "qt_metacall", qt_metacall, MRB_ARGS_ANY());
+    mrb_define_method(M, cls, "metaObject", metaObject, MRB_ARGS_NONE());
+    mrb_define_module_function(M, cls, "staticMetaObject", staticMetaObject, MRB_ARGS_NONE());
+    auto& ret = meta_info_table_[cls];
+    ret.dirty = true;
+    return ret;
+  }
+  auto& ret = meta_info_table_[cls];
+  if(mark_dirty) { ret.dirty = true; } // mark dirty
+  return ret;
 }
 
 static mrb_value
 metaObject(mrb_state* M, mrb_value self)
 {
-  return mrb_funcall(M, mrb_obj_value(qt_internal_module(M)), "getMetaObject", 2, mrb_nil_value(), self);
+  MetaInfo& info = get_meta_info(M, mrb_class(M, self), false); // don't change update dirty state
+  info.update(M, self);
+	smokeruby_object  * m = alloc_smokeruby_object(
+      M, false, qtcore_Smoke, qtcore_Smoke->idClass("QMetaObject").index,
+      &info.meta_object);
+  return mrb_obj_value(Data_Wrap_Struct(M, qmetaobject_class(M), &smokeruby_type, m));
+}
+
+static mrb_value
+staticMetaObject(mrb_state* M, mrb_value self)
+{
+  MetaInfo& info = get_meta_info(M, get_class(M, self), false); // don't change update dirty state
+  info.update(M, self);
+	smokeruby_object  * m = alloc_smokeruby_object(
+      M, false, qtcore_Smoke, qtcore_Smoke->idClass("QMetaObject").index,
+      &info.meta_object);
+  return mrb_obj_value(Data_Wrap_Struct(M, qmetaobject_class(M), &smokeruby_type, m));
+}
+
+static mrb_value
+qt_signal(mrb_state* M, mrb_value self)
+{
+  int argc; mrb_value* argv;
+  mrb_get_args(M, "*", &argv, &argc);
+
+	smokeruby_object *o = value_obj_info(M, self);
+	QObject *qobj = (QObject*)o->smoke->cast(o->ptr, o->classId, o->smoke->idClass("QObject").index);
+  if (qobj->signalsBlocked()) {
+    return mrb_false_value();
+  }
+
+  size_t len;
+  QByteArray signalname(mrb_sym2name_len(M, M->c->ci->mid, &len), len);
+
+  mrb_value metaObject_value = mrb_funcall(M, mrb_obj_value(qt_internal_module(M)), "getMetaObject", 2, mrb_nil_value(), self);
+
+	smokeruby_object *ometa = value_obj_info(M, metaObject_value);
+	if (ometa == 0) {
+		return mrb_nil_value();
+	}
+
+  int i = -1;
+	const QMetaObject * m = (QMetaObject*) ometa->ptr;
+  for (i = m->methodCount() - 1; i > -1; i--) {
+		if (m->method(i).methodType() == QMetaMethod::Signal) {
+			QString name(m->method(i).signature());
+      static QRegExp * rx = 0;
+			if (rx == 0) {
+				rx = new QRegExp("\\(.*");
+			}
+			name.replace(*rx, "");
+
+			if (name == signalname) {
+				break;
+			}
+		}
+  }
+
+	if (i == -1) {
+		return mrb_nil_value();
+	}
+
+	QList<MocArgument*> args = get_moc_arguments(M, o->smoke, m->method(i).typeName(), m->method(i).parameterTypes());
+
+	mrb_value result = mrb_nil_value();
+	// Okay, we have the signal info. *whew*
+	QtRuby::EmitSignal signal(M, qobj, i, argc, args, argv, &result);
+	signal.next();
+
+	return result;
+}
+
+void define_signal_slot(mrb_state* M, char const* name, MetaInfo& info, unsigned flags, unsigned& added) {
+  if(name[0] == '1' or name[0] == '2') { ++name; }
+  if(info.methods.find(name) != info.methods.end()) {
+    if(info.methods[name] != flags) {
+      mrb_raisef(M, mrb_class_get(M, "RuntimeError"), "%S already defined", mrb_str_new_cstr(M, name));
+    }
+  } else { ++added; }
+  info.methods[name] = flags;
+}
+
+// signal/slot
+mrb_value qt_base_signals(mrb_state* M, mrb_value self) {
+  mrb_value* argv; int argc;
+  mrb_get_args(M, "*", &argv, &argc);
+  RClass* cls = get_class(M, self);
+  MetaInfo& info = get_meta_info(M, cls);
+  unsigned added = 0;
+  for(mrb_value* i = argv; i < (argv + argc); ++i) {
+    char const* name = mrb_string_value_ptr(M, *i);
+    define_signal_slot(M, name, info, MethodSignal | AccessProtected, added);
+		mrb_define_method(M, cls, std::regex_replace(name, std::regex("[12]?(\\w+)\\(.*\\)"), "$1").c_str(),
+                      qt_signal, MRB_ARGS_ANY());
+  }
+  if(added == 0) { info.dirty = false; } // don't mark dirty if none is added
+  return self;
+}
+
+template<unsigned Flags>
+mrb_value qt_base_slots(mrb_state* M, mrb_value self) {
+  mrb_value* argv; int argc;
+  mrb_get_args(M, "*", &argv, &argc);
+  RClass* cls = get_class(M, self);
+  MetaInfo& info = get_meta_info(M, cls);
+  unsigned added = 0;
+  for(mrb_value* i = argv; i < (argv + argc); ++i) {
+    define_signal_slot(M, mrb_string_value_ptr(M, *i), info, Flags, added);
+  }
+  if(added == 0) { info.dirty = false; } // don't mark dirty if none is added
+  return self;
+}
+
+#undef signal_slot_name_check
+
+mrb_value qt_base_methodtag(mrb_state* M, mrb_value self) {
+  char const* signature; char const* tag;
+  mrb_get_args(M, "zz", &signature, &tag);
+  MetaInfo& info = get_meta_info(M, get_class(M, self));
+  assert(info.methods.find(signature) != info.methods.end());
+  assert(info.method_tags.find(signature) == info.method_tags.end());
+  info.method_tags[signature] = tag;
+  return self;
+}
+
+mrb_value qt_base_classinfo(mrb_state* M, mrb_value self) {
+  char const* key; char const* value;
+  mrb_get_args(M, "zz", &key, &value);
+  MetaInfo& info = get_meta_info(M, get_class(M, self));
+  info.classinfos.emplace_back(key, value);
+
+  // enable dbus mode if "D-Bus Interface" is defined
+  if(std::strcmp(key, "D-Bus Interface") == 0) { info.dbus = true; }
+
+  return self;
 }
 
 /* This shouldn't be needed, but kalyptus doesn't generate a staticMetaObject
@@ -1012,20 +1515,13 @@ qobject_qt_metacast(mrb_state* M, mrb_value self)
 
 	const char * classname = mrb_obj_classname(M, klass);
 	Smoke::ModuleIndex const& mi = classcache.value(classname);
-	if (mi == Smoke::NullModuleIndex) {
-		return mrb_nil_value();
-	}
+	if (mi == Smoke::NullModuleIndex) { return mrb_nil_value(); }
 
 	QObject* qobj = (QObject*) o->smoke->cast(o->ptr, o->classId, o->smoke->idClass("QObject").index);
-	if (qobj == 0) {
-		return mrb_nil_value();
-	}
+	if (qobj == 0) { return mrb_nil_value(); }
 
 	void* ret = qobj->qt_metacast(mi.smoke->classes[mi.index].className);
-
-	if (ret == 0) {
-		return mrb_nil_value();
-	}
+	if (ret == 0) { return mrb_nil_value(); }
 
 	smokeruby_object * o_cast = alloc_smokeruby_object(	M, o->allocated,
 														mi.smoke,
@@ -1063,7 +1559,7 @@ qsignalmapper_mapping(mrb_state* M, mrb_value self)
 										"QWidget*" ) == 0
 							&& Smoke::isDerivedFrom(a->smoke->classes[a->classId].className, "QWidget") ) )
 			{
-				QtRuby::MethodCall c(M, meth.smoke, meth.smoke->ambiguousMethodList[i], self, argv, 1);
+				QtRuby::MethodCall c(M, ModuleIndex(meth.smoke, meth.smoke->ambiguousMethodList[i]), self, argv, 1);
 				c.next();
 				return *(c.var());
 			}
@@ -1100,7 +1596,7 @@ qsignalmapper_set_mapping(mrb_state* M, mrb_value self)
 										"QWidget*" ) == 0
 							&& Smoke::isDerivedFrom(a->smoke->classes[a->classId].className, "QWidget") ) )
 			{
-				QtRuby::MethodCall c(M, meth.smoke, meth.smoke->ambiguousMethodList[i], self, argv, 2);
+				QtRuby::MethodCall c(M, ModuleIndex(meth.smoke, meth.smoke->ambiguousMethodList[i]), self, argv, 2);
 				c.next();
 				return *(c.var());
 			}
@@ -1271,7 +1767,7 @@ qvariant_from_value(mrb_state* M, mrb_value self)
 			if (	qstrcmp(	meth.smoke->types[meth.smoke->argumentList[meth.smoke->methods[meth.smoke->ambiguousMethodList[i]].args]].name,
 								typeName ) == 0 )
 			{
-				QtRuby::MethodCall c(M, meth.smoke, meth.smoke->ambiguousMethodList[i], self, argv, 0);
+				QtRuby::MethodCall c(M, ModuleIndex(meth.smoke, meth.smoke->ambiguousMethodList[i]), self, argv, 0);
 				c.next();
 				return *(c.var());
 			}
@@ -1326,7 +1822,7 @@ static Smoke::Index new_qvariant_qlist = 0;
 static Smoke::Index new_qvariant_qmap = 0;
 
 	if (new_qvariant_qlist == 0) {
-		Smoke::ModuleIndex nameId = qtcore_Smoke->findMethodName("Qvariant", "QVariant?");
+		Smoke::ModuleIndex nameId = qtcore_Smoke->findMethodName("QVariant", "QVariant?");
 		Smoke::ModuleIndex meth = qtcore_Smoke->findMethod(qtcore_Smoke->findClass("QVariant"), nameId);
 		Smoke::Index i = meth.smoke->methodMaps[meth.index].method;
 		i = -i;		// turn into ambiguousMethodList index
@@ -1344,7 +1840,7 @@ static Smoke::Index new_qvariant_qmap = 0;
 	}
 
 	if (argc == 1 && mrb_type(argv[0]) == MRB_TT_HASH) {
-		QtRuby::MethodCall c(M, qtcore_Smoke, new_qvariant_qmap, self, argv, argc-1);
+		QtRuby::MethodCall c(M, ModuleIndex(qtcore_Smoke, new_qvariant_qmap), self, argv, argc-1);
 		c.next();
     	return *(c.var());
 	} else if (	argc == 1
@@ -1352,17 +1848,12 @@ static Smoke::Index new_qvariant_qmap = 0;
 				&& RARRAY_LEN(argv[0]) > 0
 				&& mrb_type(mrb_ary_entry(argv[0], 0)) != MRB_TT_STRING )
 	{
-		QtRuby::MethodCall c(M, qtcore_Smoke, new_qvariant_qlist, self, argv, argc-1);
+		QtRuby::MethodCall c(M, ModuleIndex(qtcore_Smoke, new_qvariant_qlist), self, argv, argc-1);
 		c.next();
 		return *(c.var());
 	}
 
 	return mrb_call_super(M, self);
-}
-
-  static mrb_value module_method_missing(mrb_state* M, mrb_value klass)
-{
-   return class_method_missing(M, klass);
 }
 
 /*
@@ -1418,7 +1909,7 @@ initialize_qt(mrb_state* M, mrb_value self)
 	{
 		// Allocate the MethodCall within a C block. Otherwise, because the continue_new_instance()
 		// call below will longjmp out, it wouldn't give C++ an opportunity to clean up
-		QtRuby::MethodCall c(M, _current_method.smoke, _current_method.index, self, argv, argc);
+		QtRuby::MethodCall c(M, _current_method, self, argv, argc);
 		c.next();
 		temp_obj = *(c.var());
 	}
@@ -1442,31 +1933,8 @@ initialize_qt(mrb_state* M, mrb_value self)
     mrb_yield_internal(M, blk, 0, NULL, self, mrb_class(M, self));
   }
 
-	// Off with a longjmp, never to return..
-	// TODO: mrb_throw("newqt", result);
-	/*NOTREACHED*/
 	return self;
 }
-
-  /*
-mrb_value
-new_qt(mrb_state* M, mrb_value klass)
-{
-  int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
-  mrb_value temp_stack[argc + 1];
-	temp_stack[0] = mrb_obj_value(mrb_obj_alloc(M, MRB_TT_DATA, mrb_class_ptr(klass)));
-
-	for (int count = 0; count < argc; count++) {
-		temp_stack[count+1] = argv[count];
-	}
-
-	mrb_value result = mrb_funcall_argv(M, mrb_obj_value(qt_internal_module(M)), mrb_intern_lit(M, "try_initialize"), argc+1, temp_stack);
-  mrb_funcall_argv(M, result, mrb_intern_lit(M, "initialize"), argc, argv);
-
-	return result;
-}
-*/
 
 
 // Returns $qApp.ARGV() - the original ARGV array with Qt command line options removed
@@ -1484,135 +1952,10 @@ qapplication_argv(mrb_state* M, mrb_value /*self*/)
 
 //----------------- Sig/Slot ------------------
 
-
-static mrb_value
-qt_signal(mrb_state* M, mrb_value self)
-{
-  int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
-
-	smokeruby_object *o = value_obj_info(M, self);
-	QObject *qobj = (QObject*)o->smoke->cast(o->ptr, o->classId, o->smoke->idClass("QObject").index);
-    if (qobj->signalsBlocked()) {
-      return mrb_false_value();
-    }
-
-    QLatin1String signalname(mrb_sym2name(M, M->c->ci->mid));
-
-    mrb_value metaObject_value = mrb_funcall(M, mrb_obj_value(qt_internal_module(M)), "getMetaObject", 2, mrb_nil_value(), self);
-
-	smokeruby_object *ometa = value_obj_info(M, metaObject_value);
-	if (ometa == 0) {
-		return mrb_nil_value();
-	}
-
-    int i = -1;
-	const QMetaObject * m = (QMetaObject*) ometa->ptr;
-    for (i = m->methodCount() - 1; i > -1; i--) {
-		if (m->method(i).methodType() == QMetaMethod::Signal) {
-			QString name(m->method(i).signature());
-static QRegExp * rx = 0;
-			if (rx == 0) {
-				rx = new QRegExp("\\(.*");
-			}
-			name.replace(*rx, "");
-
-			if (name == signalname) {
-				break;
-			}
-		}
-    }
-
-	if (i == -1) {
-		return mrb_nil_value();
-	}
-
-	QList<MocArgument*> args = get_moc_arguments(M, o->smoke, m->method(i).typeName(), m->method(i).parameterTypes());
-
-	mrb_value result = mrb_nil_value();
-	// Okay, we have the signal info. *whew*
-	QtRuby::EmitSignal signal(M, qobj, i, argc, args, argv, &result);
-	signal.next();
-
-	return result;
-}
-
-static mrb_value
-qt_metacall(mrb_state* M, mrb_value self)
-{
-  int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
-
-	// Arguments: QMetaObject::Call _c, int id, void ** _o
-	QMetaObject::Call _c = (QMetaObject::Call) mrb_fixnum(	mrb_funcall(M, mrb_obj_value(qt_internal_module(M)),
-                                                                      "get_qinteger",
-                                                                      1, argv[0] ) );
-	int id = mrb_fixnum(argv[1]);
-	void ** _o = 0;
-
-	// Note that for a slot with no args and no return type,
-	// it isn't an error to get a NULL value of _o here.
-	Data_Get_Struct(M, argv[2], &smokeruby_type, _o);
-	// Assume the target slot is a C++ one
-	smokeruby_object *o = value_obj_info(M, self);
-	Smoke::ModuleIndex nameId = o->smoke->idMethodName("qt_metacall$$?");
-	Smoke::ModuleIndex classIdx(o->smoke, o->classId);
-	Smoke::ModuleIndex meth = nameId.smoke->findMethod(classIdx, nameId);
-	if (meth.index > 0) {
-		const Smoke::Method &m = meth.smoke->methods[meth.smoke->methodMaps[meth.index].method];
-		Smoke::ClassFn fn = meth.smoke->classes[m.classId].classFn;
-		Smoke::StackItem i[4];
-		i[1].s_enum = _c;
-		i[2].s_int = id;
-		i[3].s_voidp = _o;
-		(*fn)(m.method, o->ptr, i);
-		int ret = i[0].s_int;
-		if (ret < 0) {
-			return mrb_fixnum_value(ret);
-		}
-	} else {
-		// Should never happen..
-		mrb_raisef(M, mrb_class_get(M, "RuntimeError"), "Cannot find %S::qt_metacall() method\n",
-               mrb_str_new_cstr(M, o->smoke->classes[o->classId].className));
-	}
-
-    if (_c != QMetaObject::InvokeMetaMethod) {
-		return argv[1];
-	}
-
-	QObject * qobj = (QObject *) o->smoke->cast(o->ptr, o->classId, o->smoke->idClass("QObject").index);
-	// get obj metaobject with a virtual call
-	const QMetaObject *metaobject = qobj->metaObject();
-
-	// get method/property count
-	int count = 0;
-	if (_c == QMetaObject::InvokeMetaMethod) {
-		count = metaobject->methodCount();
-	} else {
-		count = metaobject->propertyCount();
-	}
-
-	if (_c == QMetaObject::InvokeMetaMethod) {
-		QMetaMethod method = metaobject->method(id);
-
-		if (method.methodType() == QMetaMethod::Signal) {
-			metaobject->activate(qobj, id, (void**) _o);
-			return mrb_fixnum_value(id - count);
-		}
-
-		QList<MocArgument*> mocArgs = get_moc_arguments(M, o->smoke, method.typeName(), method.parameterTypes());
-
-		QString name(method.signature());
-static QRegExp * rx = 0;
-		if (rx == 0) {
-			rx = new QRegExp("\\(.*");
-		}
-		name.replace(*rx, "");
-		QtRuby::InvokeSlot slot(M, self, mrb_intern_cstr(M, name.toLatin1()), mocArgs, _o);
-		slot.next();
-	}
-
-	return mrb_fixnum_value(id - count);
+static QByteArray
+to_normalized_invoke_signature(char const* raw) {
+  static std::regex const args_rex("([12]?).+\\((.*)\\)");
+  return QMetaObject::normalizedSignature(std::regex_replace(raw, args_rex, "1invoke($2)").c_str());
 }
 
 static mrb_value
@@ -1620,26 +1963,63 @@ qobject_connect(mrb_state* M, mrb_value self)
 {
   int argc; mrb_value* argv; mrb_value blk;
   mrb_get_args(M, "&*", &blk, &argv, &argc);
+  std::array<mrb_value, 4> args;
+  RClass* const Qt = mrb_class_get(M, "Qt");
 
-	if (not mrb_nil_p(blk)) {
-		if (argc == 1) {
-			return mrb_funcall(M, mrb_obj_value(qt_internal_module(M)), "signal_connect", 3, self, argv[0], blk);
-		} else if (argc == 2) {
-			return mrb_funcall(M, mrb_obj_value(qt_internal_module(M)), "connect", 4, argv[0], argv[1], self, blk);
-		} else if (argc == 3) {
-			return mrb_funcall(M, mrb_obj_value(qt_internal_module(M)), "connect", 4, argv[0], argv[1], argv[2], blk);
-		} else {
-			mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
-		}
-	} else {
-		if (argc == 3 && mrb_type(argv[1]) != MRB_TT_STRING) {
-			return mrb_funcall(M, mrb_obj_value(qt_internal_module(M)), "method_connect", 4, self, argv[0], argv[1], argv[2]);
-		} else {
-			return mrb_call_super(M, self);
+	if (mrb_nil_p(blk)) {
+		if (argc == 3 and not mrb_string_p(argv[1])) {
+      // Handles calls of the form:
+      //  connect(:mysig, mytarget, :mymethod))
+      //  connect(SIGNAL('mysignal(int)'), mytarget, :mymethod))
+      QByteArray const signature = to_normalized_invoke_signature(mrb_string_value_ptr(M, argv[0]));
+      static std::regex const method_name_rex("[12]?(.+)\\(.*\\)");
+      std::string const method_name = std::regex_replace(
+          mrb_string_value_ptr(M, argv[2]), method_name_rex, "$1");
+      args = { {
+          self, argv[0], mrb_funcall(
+              M, mrb_obj_value(mrb_class_get_under(M, Qt, "MethodInvocation")), "new", 3,
+              argv[1], mrb_symbol_value(mrb_intern(M, method_name.data(), method_name.size())),
+              mrb_symbol_value(mrb_intern(M, signature.constData(), signature.size()))),
+          mrb_symbol_value(mrb_intern(M, signature.constData(), signature.size())) } };
+		} else { return mrb_call_super(M, self); }
+  } else {
+    switch(argc) {
+      case 1: {
+        // Handles calls of the form:
+        //  connect(SIGNAL(:mysig)) { ...}
+        //  connect(SIGNAL('mysig(int)')) {|arg(s)| ...}
+        QByteArray const signature = to_normalized_invoke_signature(mrb_string_value_ptr(M, argv[0]));
+        args = { {
+            self, argv[0], mrb_funcall(
+                M, mrb_obj_value(mrb_class_get_under(M, Qt, "SignalBlockInvocation")), "new", 3,
+                self, mrb_funcall(M, blk, "to_proc", 0), mrb_symbol_value(mrb_intern(M, signature.constData(), signature.size()))),
+            mrb_symbol_value(mrb_intern(M, signature.constData(), signature.size())) } };
+        break;
+      }
+
+      case 2:
+      case 3: {
+        // Handles calls of the form:
+        //  connect(myobj, SIGNAL('mysig(int)'), mytarget) {|arg(s)| ...}
+        //  connect(myobj, SIGNAL('mysig(int)')) {|arg(s)| ...}
+        //  connect(myobj, SIGNAL(:mysig), mytarget) { ...}
+        //  connect(myobj, SIGNAL(:mysig)) { ...}
+        QByteArray const signature = to_normalized_invoke_signature(mrb_string_value_ptr(M, argv[1]));
+        args = { {
+            argv[0], argv[1], mrb_funcall(
+                M, mrb_obj_value(mrb_class_get_under(M, Qt, "BlockInvocation")), "new", 3,
+                argc == 3? argv[2] : self, mrb_funcall(M, blk, "to_proc", 0),
+                mrb_symbol_value(mrb_intern(M, signature.constData(), signature.size()))),
+            mrb_symbol_value(mrb_intern(M, signature.constData(), signature.size())) } };
+        break;
+      }
+      default:
+        mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list: %S", mrb_fixnum_value(argc));
 		}
 	}
 
-  return mrb_nil_value();
+  return mrb_funcall_argv(M, mrb_obj_value(mrb_class_get_under(M, Qt, "Object")),
+                          mrb_intern_lit(M, "connect"), 4, args.data());
 }
 
 static mrb_value
@@ -1647,61 +2027,16 @@ qtimer_single_shot(mrb_state* M, mrb_value self)
 {
   int argc; mrb_value* argv; mrb_value blk;
   mrb_get_args(M, "&*", &blk, &argv, &argc);
-
-	if (not mrb_nil_p(blk)) {
-		if (argc == 2) {
-			return mrb_funcall(M, mrb_obj_value(qt_internal_module(M)), "single_shot_timer_connect", 3, argv[0], argv[1], mrb_block_proc());
-		} else {
-			mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
-		}
-	} else {
-		return mrb_call_super(M, self);
-	}
-
-  return mrb_nil_value();
+	if (not mrb_nil_p(blk) and argc == 2) {
+    return mrb_funcall(
+        M, self, "singleShot", 3, argv[0],
+        mrb_funcall(M, mrb_obj_value(mrb_class_get_under(M, mrb_class_get(M, "Qt"), "BlockInvocation")),
+                    "new", 2, argv[1], blk, mrb_str_new_cstr(M, "invoke()")),
+        mrb_str_new_cstr(M, SLOT(invoke())));
+	} else { return mrb_call_super(M, self); }
 }
 
 // --------------- Ruby C functions for Qt::_internal.* helpers  ----------------
-
-
-static mrb_value
-getMethStat(mrb_state* M, mrb_value /*self*/)
-{
-    mrb_value result_list = mrb_ary_new(M);
-    mrb_ary_push(M, result_list, mrb_fixnum_value((int)methcache.size()));
-    mrb_ary_push(M, result_list, mrb_fixnum_value((int)methcache.count()));
-    return result_list;
-}
-
-static mrb_value
-getClassStat(mrb_state* M, mrb_value /*self*/)
-{
-    mrb_value result_list = mrb_ary_new(M);
-    mrb_ary_push(M, result_list, mrb_fixnum_value((int)classcache.size()));
-    mrb_ary_push(M, result_list, mrb_fixnum_value((int)classcache.count()));
-    return result_list;
-}
-
-static mrb_value
-getIsa(mrb_state* M, mrb_value /*self*/)
-{
-  mrb_value classId;
-  mrb_get_args(M, "o", &classId);
-    mrb_value parents_list = mrb_ary_new(M);
-
-    int id = mrb_fixnum(mrb_funcall(M, classId, "index", 0));
-    Smoke* smoke = smokeList[mrb_fixnum(mrb_funcall(M, classId, "smoke", 0))];
-
-    Smoke::Index *parents =
-	smoke->inheritanceList +
-	smoke->classes[id].parents;
-
-    while(*parents) {
-	//logger("\tparent: %s", qtcore_Smoke->classes[*parents].className);
-      mrb_ary_push(M, parents_list, mrb_str_new_cstr(M, smoke->classes[*parents++].className));
-    }
-    return parents_list;
-}
 
 // Return the class name of a QObject. Note that the name will be in the
 // form of Qt::Widget rather than QWidget. Is this a bug or a feature?
@@ -1854,191 +2189,9 @@ debugging(mrb_state*, mrb_value /*self*/)
     return mrb_fixnum_value(do_debug);
 }
 
-static mrb_value
-classid2name(mrb_state* M, mrb_value /*self*/)
-{
-  mrb_value mi_value;
-  mrb_get_args(M, "o", &mi_value);
-  int ix = mrb_fixnum(mrb_funcall(M, mi_value, "index", 0));
-  int smokeidx = mrb_fixnum(mrb_funcall(M, mi_value, "smoke", 0));
-    Smoke::ModuleIndex mi(smokeList[smokeidx], ix);
-    return mrb_str_new_cstr(M, IdToClassNameMap[mi]->constData());
-}
-
-static mrb_value
-find_pclassid(mrb_state* M, mrb_value /*self*/)
-{
-  mrb_value p_value;
-  mrb_get_args(M, "o", &p_value);
-    if (mrb_nil_p(p_value)) {
-      return mrb_funcall(M, mrb_obj_value(moduleindex_class(M)), "new", 2, 0, 0);
-    }
-
-    char *p = mrb_string_value_ptr(M, p_value);
-    Smoke::ModuleIndex const& r = classcache.value(QByteArray(p));
-    if (r != Smoke::NullModuleIndex) {
-      return mrb_funcall(M, mrb_obj_value(moduleindex_class(M)), "new", 2, mrb_fixnum_value(smokeList.indexOf(r.smoke)), mrb_fixnum_value(r.index));
-    } else {
-      return mrb_funcall(M, mrb_obj_value(moduleindex_class(M)), "new", 2, mrb_nil_value(), mrb_nil_value());
-    }
-}
-
-static QMetaObject*
-parent_meta_object(mrb_state* M, mrb_value obj)
-{
-	smokeruby_object* o = value_obj_info(M, obj);
-	Smoke::ModuleIndex nameId = o->smoke->idMethodName("metaObject");
-	Smoke::ModuleIndex classIdx(o->smoke, o->classId);
-	Smoke::ModuleIndex meth = o->smoke->findMethod(classIdx, nameId);
-	if (meth.index <= 0) {
-		// Should never happen..
-	}
-
-	const Smoke::Method &methodId = meth.smoke->methods[meth.smoke->methodMaps[meth.index].method];
-	Smoke::ClassFn fn = o->smoke->classes[methodId.classId].classFn;
-	Smoke::StackItem i[1];
-	(*fn)(methodId.method, o->ptr, i);
-	return (QMetaObject*) i[0].s_voidp;
-}
-
-static mrb_value
-make_metaObject(mrb_state* M, mrb_value /*self*/)
-{
-  mrb_value obj, parentMeta, stringdata_value, data_value;
-  mrb_get_args(M, "ooSo", &obj, &parentMeta, &stringdata_value, &data_value);
-	QMetaObject* superdata = 0;
-
-	if (mrb_nil_p(parentMeta)) {
-		// The parent class is a Smoke class, so call metaObject() on the
-		// instance to get it via a smoke library call
-		superdata = parent_meta_object(M, obj);
-	} else {
-		// The parent class is a custom Ruby class whose metaObject
-		// was constructed at runtime
-		smokeruby_object* p = value_obj_info(M, parentMeta);
-		superdata = (QMetaObject *) p->ptr;
-	}
-
-	char *stringdata = new char[RSTRING_LEN(stringdata_value) + 1];
-
-	int count = RARRAY_LEN(data_value);
-	uint * data = new uint[count];
-
-	memcpy(	(void *) stringdata, RSTRING_PTR(stringdata_value), RSTRING_LEN(stringdata_value) );
-
-	for (long i = 0; i < count; i++) {
-		mrb_value rv = mrb_ary_entry(data_value, i);
-		data[i] = mrb_fixnum(rv);
-	}
-
-	QMetaObject ob = {
-		{ superdata, stringdata, data, 0 }
-	} ;
-
-	QMetaObject * meta = new QMetaObject;
-	*meta = ob;
-
-  if(do_debug & qtdb_gc) {
-    qWarning("make_metaObject() superdata: %p %s\n", meta->d.superdata, superdata->className());
-
-    qWarning(
-        " // content:\n"
-        "       %d,       // revision\n"
-        "       %d,       // classname\n"
-        "       %d,   %d, // classinfo\n"
-        "       %d,   %d, // methods\n"
-        "       %d,   %d, // properties\n"
-        "       %d,   %d, // enums/sets\n",
-        data[0], data[1], data[2], data[3],
-        data[4], data[5], data[6], data[7], data[8], data[9]);
-
-    int s = data[3];
-
-    if (data[2] > 0) {
-      qWarning("\n // classinfo: key, value\n");
-      for (uint j = 0; j < data[2]; j++) {
-        qWarning("      %d,    %d\n", data[s + (j * 2)], data[s + (j * 2) + 1]);
-      }
-    }
-
-    s = data[5];
-    bool signal_headings = true;
-    bool slot_headings = true;
-
-    for (uint j = 0; j < data[4]; j++) {
-      if (signal_headings && (data[s + (j * 5) + 4] & 0x04) != 0) {
-        qWarning("\n // signals: signature, parameters, type, tag, flags\n");
-        signal_headings = false;
-      }
-
-      if (slot_headings && (data[s + (j * 5) + 4] & 0x08) != 0) {
-        qWarning("\n // slots: signature, parameters, type, tag, flags\n");
-        slot_headings = false;
-      }
-
-      qWarning("      %d,   %d,   %d,   %d, 0x%2.2x\n",
-             data[s + (j * 5)], data[s + (j * 5) + 1], data[s + (j * 5) + 2],
-             data[s + (j * 5) + 3], data[s + (j * 5) + 4]);
-    }
-
-    s += (data[4] * 5);
-    for (uint j = 0; j < data[6]; j++) {
-      qWarning("\n // properties: name, type, flags\n");
-      qWarning("      %d,   %d,   0x%8.8x\n",
-             data[s + (j * 3)], data[s + (j * 3) + 1], data[s + (j * 3) + 2]);
-    }
-
-    s += (data[6] * 3);
-    for (int i = s; i < count; i++) {
-      qWarning("\n       %d        // eod\n", data[i]);
-    }
-
-    qWarning("\nqt_meta_stringdata:\n    \"");
-
-    int strlength = 0;
-    for (int j = 0; j < RSTRING_LEN(stringdata_value); j++) {
-      strlength++;
-      if (meta->d.stringdata[j] == 0) {
-        qWarning("\\0");
-        if (strlength > 40) {
-          qWarning("\"\n    \"");
-          strlength = 0;
-        }
-      } else {
-        qWarning("%c", meta->d.stringdata[j]);
-      }
-    }
-    qWarning("\"\n\n");
-  }
-
-	smokeruby_object  * m = alloc_smokeruby_object(	M, true,
-													qtcore_Smoke,
-													qtcore_Smoke->idClass("QMetaObject").index,
-													meta );
-
-  return mrb_obj_value(Data_Wrap_Struct(M, qmetaobject_class(M), &smokeruby_type, m));
-}
-
-static mrb_value
-add_metaobject_methods(mrb_state* M, mrb_value self)
-{
-  mrb_value klass;
-  mrb_get_args(M, "o", &klass);
-	mrb_define_method(M, mrb_class_ptr(klass), "qt_metacall", qt_metacall, MRB_ARGS_ANY());
-	mrb_define_method(M, mrb_class_ptr(klass), "metaObject", metaObject, MRB_ARGS_NONE());
-	return self;
-}
-
-static mrb_value
-add_signal_methods(mrb_state* M, mrb_value self)
-{
-  mrb_value klass, signalNames;
-  mrb_get_args(M, "oo", &klass, &signalNames);
-	for (long index = 0; index < RARRAY_LEN(signalNames); index++) {
-		mrb_value signal = mrb_ary_entry(signalNames, index);
-		mrb_define_method(M, mrb_class_ptr(klass), mrb_string_value_ptr(M, signal), qt_signal, MRB_ARGS_ANY());
-	}
-	return self;
+ModuleIndex
+find_pclassid(char const* p) {
+  return p? classcache.value(p) : Smoke::NullModuleIndex;
 }
 
 static mrb_value
@@ -2077,149 +2230,6 @@ is_disposed(mrb_state* M, mrb_value self)
 {
 	smokeruby_object *o = value_obj_info(M, self);
 	return mrb_bool_value(not (o != 0 && o->ptr != 0));
-}
-
-// Returns the Smoke classId of a ruby instance
-static mrb_value
-idInstance(mrb_state* M, mrb_value /*self*/)
-{
-  mrb_value instance;
-  mrb_get_args(M, "o", &instance);
-    smokeruby_object *o = value_obj_info(M, instance);
-    if(!o)
-      return mrb_nil_value();
-
-    return mrb_funcall(M, mrb_obj_value(moduleindex_class(M)), "new", 2, mrb_fixnum_value(smokeList.indexOf(o->smoke)), mrb_fixnum_value(o->classId));
-}
-
-static mrb_value
-findClass(mrb_state* M, mrb_value /*self*/)
-{
-  mrb_value name_value;
-  mrb_get_args(M, "o", &name_value);
-    char *name = mrb_string_value_ptr(M, name_value);
-    Smoke::ModuleIndex mi = Smoke::findClass(name);
-    return mrb_funcall(M, mrb_obj_value(moduleindex_class(M)), "new", 2, mrb_fixnum_value(smokeList.indexOf(mi.smoke)), mrb_fixnum_value(mi.index));
-}
-
-// static mrb_value
-// idMethodName(mrb_value /*self*/, mrb_value name_value)
-// {
-//     char *name = mrb_string_value_ptr(M, name_value);
-//     return mrb_fixnum_value(qtcore_Smoke->idMethodName(name).index);
-// }
-//
-// static mrb_value
-// idMethod(mrb_value /*self*/, mrb_value idclass_value, mrb_value idmethodname_value)
-// {
-//     int idclass = mrb_fixnum(idclass_value);
-//     int idmethodname = mrb_fixnum(idmethodname_value);
-//     return mrb_fixnum_value(qtcore_Smoke->idMethod(idclass, idmethodname).index);
-// }
-
-static mrb_value
-dumpCandidates(mrb_state* M, mrb_value /*self*/)
-{
-  mrb_value rmeths;
-  mrb_get_args(M, "o", &rmeths);
-
-  mrb_value errmsg = mrb_str_new_cstr(M, "");
-  if(not mrb_nil_p(rmeths)) {
-	int count = RARRAY_LEN(rmeths);
-        for(int i = 0; i < count; i++) {
-          rb_str_catf(M, errmsg, "\t");
-	    int id = mrb_fixnum(mrb_funcall(M, mrb_ary_entry(rmeths, i), "index", 0));
-	    Smoke* smoke = smokeList[mrb_fixnum(mrb_funcall(M, mrb_ary_entry(rmeths, i), "smoke", 0))];
-	    const Smoke::Method &meth = smoke->methods[id];
-	    const char *tname = smoke->types[meth.ret].name;
-	    if(meth.flags & Smoke::mf_enum) {
-        rb_str_catf(M, errmsg, "enum ");
-        rb_str_catf(M, errmsg, "%s::%s", smoke->classes[meth.classId].className, smoke->methodNames[meth.name]);
-        rb_str_catf(M, errmsg, "\n");
-	    } else {
-        if(meth.flags & Smoke::mf_static) rb_str_catf(M, errmsg, "static ");
-			rb_str_catf(M, errmsg, "%s ", (tname ? tname:"void"));
-			rb_str_catf(M, errmsg, "%s::%s(", smoke->classes[meth.classId].className, smoke->methodNames[meth.name]);
-			for(int i = 0; i < meth.numArgs; i++) {
-        if(i) rb_str_catf(M, errmsg, ", ");
-			tname = smoke->types[smoke->argumentList[meth.args+i]].name;
-			rb_str_catf(M, errmsg, "%s", (tname ? tname:"void"));
-			}
-			rb_str_catf(M, errmsg, ")");
-			if(meth.flags & Smoke::mf_const) rb_str_catf(M, errmsg, " const");
-			rb_str_catf(M, errmsg, "\n");
-        	}
-        }
-    }
-    return errmsg;
-}
-
-static mrb_value
-isObject(mrb_state* M, mrb_value /*self*/)
-{
-  mrb_value obj;
-  mrb_get_args(M, "o", &obj);
-    void * ptr = 0;
-    ptr = value_to_ptr(M, obj);
-    return mrb_bool_value(ptr > 0);
-}
-
-static mrb_value
-getClassList(mrb_state* M, mrb_value /*self*/)
-{
-    mrb_value class_list = mrb_ary_new(M);
-
-    for (int i = 1; i <= qtcore_Smoke->numClasses; i++) {
-      PROTECT_SCOPE();
-        if (qtcore_Smoke->classes[i].className && !qtcore_Smoke->classes[i].external)
-          mrb_ary_push(M, class_list, mrb_str_new_cstr(M, qtcore_Smoke->classes[i].className));
-    }
-
-    for (int i = 1; i <= qtgui_Smoke->numClasses; i++) {
-      PROTECT_SCOPE();
-        if (qtgui_Smoke->classes[i].className && !qtgui_Smoke->classes[i].external)
-            mrb_ary_push(M, class_list, mrb_str_new_cstr(M, qtgui_Smoke->classes[i].className));
-    }
-
-    for (int i = 1; i <= qtxml_Smoke->numClasses; i++) {
-      PROTECT_SCOPE();
-        if (qtxml_Smoke->classes[i].className && !qtxml_Smoke->classes[i].external)
-            mrb_ary_push(M, class_list, mrb_str_new_cstr(M, qtxml_Smoke->classes[i].className));
-    }
-
-    for (int i = 1; i <= qtsql_Smoke->numClasses; i++) {
-      PROTECT_SCOPE();
-        if (qtsql_Smoke->classes[i].className && !qtsql_Smoke->classes[i].external)
-            mrb_ary_push(M, class_list, mrb_str_new_cstr(M, qtsql_Smoke->classes[i].className));
-    }
-
-    for (int i = 1; i <= qtopengl_Smoke->numClasses; i++) {
-      PROTECT_SCOPE();
-        if (qtopengl_Smoke->classes[i].className && !qtopengl_Smoke->classes[i].external)
-            mrb_ary_push(M, class_list, mrb_str_new_cstr(M, qtopengl_Smoke->classes[i].className));
-    }
-
-    for (int i = 1; i <= qtnetwork_Smoke->numClasses; i++) {
-      PROTECT_SCOPE();
-        if (qtnetwork_Smoke->classes[i].className && !qtnetwork_Smoke->classes[i].external)
-            mrb_ary_push(M, class_list, mrb_str_new_cstr(M, qtnetwork_Smoke->classes[i].className));
-    }
-
-    for (int i = 1; i <= qtsvg_Smoke->numClasses; i++) {
-      PROTECT_SCOPE();
-        if (qtsvg_Smoke->classes[i].className && !qtsvg_Smoke->classes[i].external)
-            mrb_ary_push(M, class_list, mrb_str_new_cstr(M, qtsvg_Smoke->classes[i].className));
-    }
-
-#ifdef QT_QTDBUS
-    for (int i = 1; i <= qtdbus_Smoke->numClasses; i++) {
-      PROTECT_SCOPE();
-        if (qtdbus_Smoke->classes[i].className && !qtdbus_Smoke->classes[i].external)
-            mrb_ary_push(M, class_list, mrb_str_new_cstr(M, qtdbus_Smoke->classes[i].className));
-    }
-#endif
-
-    return class_list;
 }
 
 static RClass*
@@ -2429,8 +2439,8 @@ init_class_list(mrb_state* M, Smoke* s, RClass* const mod)
 
     std::string const normalized = normalize_classname(name);
     mrb_value const
-        normalized_mruby = mrb_str_new(M, normalized.data(), normalized.size()),
-        classname_mruby = mrb_str_new_cstr(M, name);
+        normalized_mruby = mrb_symbol_value(mrb_intern(M, normalized.data(), normalized.size())),
+        classname_mruby = mrb_symbol_value(mrb_intern_cstr(M, name));
     mrb_ary_set(M, IdClass, id, normalized_mruby);
     mrb_hash_set(M, CppNames, normalized_mruby, classname_mruby);
 
@@ -2456,24 +2466,6 @@ set_qtruby_embedded_wrapped(mrb_state* M, mrb_value /*self*/)
 
 extern "C" void mrb_mruby_qt_gem_final(mrb_state*) {}
 
-void myMessageOutput(QtMsgType type, const char *msg)
-{
-  switch (type) {
-    case QtDebugMsg:
-      fprintf(stderr, "Debug: %s\n", msg);
-      break;
-    case QtWarningMsg:
-      fprintf(stderr, "Warning: %s\n", msg);
-      break;
-    case QtCriticalMsg:
-      fprintf(stderr, "Critical: %s\n", msg);
-      break;
-    case QtFatalMsg:
-      fprintf(stderr, "Fatal: %s\n", msg);
-      abort();
-  }
-}
-
 extern TypeHandler QtDeclarative_handlers[];
 extern TypeHandler QtScript_handlers[];
 extern TypeHandler QtTest_handlers[];
@@ -2483,8 +2475,6 @@ extern TypeHandler QtWebKit_handlers[];
 extern "C" Q_DECL_EXPORT void
 mrb_mruby_qt_gem_init(mrb_state* M)
 {
-    qInstallMsgHandler(myMessageOutput);
-
     RClass* Qt_module = mrb_define_module(M, "Qt");
 		RClass* QtInternal_module = mrb_define_module_under(M, Qt_module, "Internal");
     mrb_mod_cv_set(M, QtInternal_module, mrb_intern_lit(M, "Classes"), mrb_hash_new(M));
@@ -2492,9 +2482,9 @@ mrb_mruby_qt_gem_init(mrb_state* M)
     mrb_mod_cv_set(M, QtInternal_module, mrb_intern_lit(M, "IdClass"), mrb_ary_new(M));
 
     {
-      mrb_value str = mrb_str_new(M, "Qt", 2);
+      mrb_value str = mrb_symbol_value(mrb_intern_lit(M, "Qt"));
       mrb_hash_set(M, mrb_mod_cv_get(M, QtInternal_module, mrb_intern_lit(M, "CppNames")), str, str);
-      mrb_mod_cv_set(M, Qt_module, mrb_intern_lit(M, "QtClassName"), mrb_str_new_cstr(M, "QGlobalSpace"));
+      mrb_mod_cv_set(M, Qt_module, mrb_intern_lit(M, "QtClassName"), mrb_symbol_value(mrb_intern_lit(M, "QGlobalSpace")));
     }
 
 		RClass* QtBase_class = mrb_define_class_under(M, Qt_module, "Base", M->object_class);
@@ -2508,7 +2498,7 @@ mrb_mruby_qt_gem_init(mrb_state* M)
 #define INIT_BINDING(module, mod)  \
     init_ ## module ## _Smoke(); \
     static QtRuby::Binding module##_binding = QtRuby::Binding(M, module##_Smoke); \
-    QtRubyModule module = { "QtRuby_" #module, resolve_classname, 0, &module##_binding }; \
+    QtRubyModule module = { "QtRuby_" #module, resolve_classname_qt, 0, &module##_binding }; \
     qtruby_modules[module##_Smoke] = module; \
     smokeList << module##_Smoke; \
     init_class_list(M, module ## _Smoke, mod)
@@ -2548,15 +2538,24 @@ mrb_mruby_qt_gem_init(mrb_state* M)
 
     mrb_define_method(M, QtBase_class, "initialize", initialize_qt, MRB_ARGS_ANY());
     mrb_define_module_function(M, QtBase_class, "method_missing", class_method_missing, MRB_ARGS_ANY());
-    mrb_define_module_function(M, Qt_module, "method_missing", module_method_missing, MRB_ARGS_ANY());
+    mrb_define_module_function(M, Qt_module, "method_missing", class_method_missing, MRB_ARGS_ANY());
     mrb_define_method(M, QtBase_class, "method_missing", method_missing, MRB_ARGS_ANY());
 
+    // signal/slot
+    mrb_define_module_function(M, QtBase_class, "signals", qt_base_signals, MRB_ARGS_ANY());
+    mrb_define_module_function(M, QtBase_class, "slots", qt_base_slots<MethodSlot | AccessPublic>, MRB_ARGS_ANY());
+    mrb_define_module_function(M, QtBase_class, "q_signal", qt_base_signals, MRB_ARGS_REQ(1));
+    mrb_define_module_function(M, QtBase_class, "q_slot", qt_base_slots<MethodSlot | AccessPublic>, MRB_ARGS_REQ(1));
+    mrb_define_module_function(M, QtBase_class, "private_slots", qt_base_slots<MethodSlot | AccessPrivate>, MRB_ARGS_ANY());
+
+    mrb_define_module_function(M, QtBase_class, "q_methodtag", qt_base_methodtag, MRB_ARGS_REQ(2));
+    mrb_define_module_function(M, QtBase_class, "q_classinfo", qt_base_classinfo, MRB_ARGS_REQ(2));
+
     mrb_define_module_function(M, QtBase_class, "const_missing", class_method_missing, MRB_ARGS_ANY());
-    mrb_define_module_function(M, Qt_module, "const_missing", module_method_missing, MRB_ARGS_ANY());
+    mrb_define_module_function(M, Qt_module, "const_missing", class_method_missing, MRB_ARGS_ANY());
     mrb_define_method(M, QtBase_class, "const_missing", method_missing, MRB_ARGS_ANY());
 
     mrb_define_method(M, QtBase_class, "dispose", dispose, MRB_ARGS_REQ(0));
-    mrb_define_method(M, QtBase_class, "isDisposed", is_disposed, MRB_ARGS_REQ(0));
     mrb_define_method(M, QtBase_class, "disposed?", is_disposed, MRB_ARGS_REQ(0));
 
     mrb_define_method(M, QtBase_class, "qVariantValue", qvariant_value, MRB_ARGS_REQ(2));
@@ -2566,31 +2565,13 @@ mrb_mruby_qt_gem_init(mrb_state* M)
     mrb_define_method(M, M->object_class, "qFatal", qfatal, MRB_ARGS_REQ(1));
     mrb_define_method(M, M->object_class, "qWarning", qwarning, MRB_ARGS_REQ(1));
 
-    mrb_define_module_function(M, QtInternal_module, "getMethStat", getMethStat, MRB_ARGS_REQ(0));
-    mrb_define_module_function(M, QtInternal_module, "getClassStat", getClassStat, MRB_ARGS_REQ(0));
-    mrb_define_module_function(M, QtInternal_module, "getIsa", getIsa, MRB_ARGS_REQ(1));
-    mrb_define_module_function(M, QtInternal_module, "setDebug", setDebug, MRB_ARGS_REQ(1));
+    mrb_define_module_function(M, QtInternal_module, "debug=", setDebug, MRB_ARGS_REQ(1));
     mrb_define_module_function(M, QtInternal_module, "debug", debugging, MRB_ARGS_REQ(0));
-    mrb_define_module_function(M, QtInternal_module, "classid2name", classid2name, MRB_ARGS_REQ(1));
-    mrb_define_module_function(M, QtInternal_module, "find_pclassid", find_pclassid, MRB_ARGS_REQ(1));
 
-    mrb_define_module_function(M, QtInternal_module, "make_metaObject", make_metaObject, MRB_ARGS_REQ(4));
-    mrb_define_module_function(M, QtInternal_module, "addMetaObjectMethods", add_metaobject_methods, MRB_ARGS_REQ(1));
-    mrb_define_module_function(M, QtInternal_module, "addSignalMethods", add_signal_methods, MRB_ARGS_REQ(2));
     mrb_define_module_function(M, QtInternal_module, "mapObject", mapObject, MRB_ARGS_REQ(1));
 
-    mrb_define_module_function(M, QtInternal_module, "idInstance", idInstance, MRB_ARGS_REQ(1));
-    mrb_define_module_function(M, QtInternal_module, "findClass", findClass, MRB_ARGS_REQ(1));
-//     mrb_define_module_function(M, QtInternal_module, "idMethodName", idMethodName, MRB_ARGS_REQ(1));
-//     mrb_define_module_function(M, QtInternal_module, "idMethod", idMethod, MRB_ARGS_REQ(2));
-    mrb_define_module_function(M, QtInternal_module, "findAllMethods", findAllMethods, MRB_ARGS_ANY());
-    mrb_define_module_function(M, QtInternal_module, "findAllMethodNames", findAllMethodNames, MRB_ARGS_REQ(3));
-    mrb_define_module_function(M, QtInternal_module, "dumpCandidates", dumpCandidates, MRB_ARGS_REQ(1));
-    mrb_define_module_function(M, QtInternal_module, "isObject", isObject, MRB_ARGS_REQ(1));
-    mrb_define_module_function(M, QtInternal_module, "getClassList", getClassList, MRB_ARGS_REQ(0));
     mrb_define_module_function(M, QtInternal_module, "cast_object_to", cast_object_to, MRB_ARGS_REQ(2));
     mrb_define_module_function(M, Qt_module, "dynamic_cast", cast_object_to, MRB_ARGS_REQ(2));
-    mrb_define_module_function(M, QtInternal_module, "kross2smoke", kross2smoke, MRB_ARGS_REQ(2));
     mrb_define_module_function(M, QtInternal_module, "set_qtruby_embedded", set_qtruby_embedded_wrapped, MRB_ARGS_REQ(1));
 
     mrb_define_module_function(M, QtInternal_module, "application_terminated=", set_application_terminated, MRB_ARGS_REQ(1));
@@ -2601,6 +2582,13 @@ mrb_mruby_qt_gem_init(mrb_state* M)
     mrb_define_module_function(M, Qt_module, "qRegisterResourceData", q_register_resource_data, MRB_ARGS_REQ(4));
     mrb_define_module_function(M, Qt_module, "qUnregisterResourceData", q_unregister_resource_data, MRB_ARGS_REQ(4));
 
+    // TODO: make this method private
+    mrb_define_method(M, M->module_class, "qt_methods", module_qt_methods, MRB_ARGS_REQ(2) | MRB_ARGS_OPT(1));
+
+    mrb_define_module_function(M, QtBase_class, "ancestors", qt_base_ancestors, MRB_ARGS_NONE());
+    mrb_define_method(M, QtBase_class, "qt_methods", qt_base_qt_methods, MRB_ARGS_REQ(2));
+
     rObject_typeId = QMetaType::registerType("rObject", &delete_ruby_object, &create_ruby_object);
 }
 // kate: space-indent false;
+

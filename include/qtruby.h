@@ -123,7 +123,6 @@ enum QtDebugChannel {
 #define qtablemodel_class(M) mrb_class_get_under(M, qt_module(M), "TableModel")
 #define qt_base_class(M) mrb_class_get_under(M, qt_module(M), "Base")
 #define qvariant_class(M) mrb_class_get_under(M, qt_module(M), "Variant")
-#define moduleindex_class(M) mrb_class_get_under(M, qt_internal_module(M), "ModuleIndex")
 
   mrb_value mrb_call_super(mrb_state* M, mrb_value self);
 
@@ -161,8 +160,6 @@ extern Q_DECL_EXPORT const char * resolve_classname(smokeruby_object * o);
 extern Q_DECL_EXPORT mrb_value rb_str_catf(mrb_state* M, mrb_value self, const char *format, ...) __attribute__ ((format (printf, 3, 4)));
 
 extern Q_DECL_EXPORT mrb_value findMethod(mrb_state* M, mrb_value self);
-extern Q_DECL_EXPORT mrb_value findAllMethods(mrb_state* M, mrb_value self);
-extern Q_DECL_EXPORT mrb_value findAllMethodNames(mrb_state* M, mrb_value self);
 
 extern Q_DECL_EXPORT Smoke::ModuleIndex find_cached_selector(mrb_state* M, int argc, mrb_value * argv, RClass* klass, const char * methodName, QByteArray& mcid);
 extern Q_DECL_EXPORT mrb_value method_missing(mrb_state* M, mrb_value self);
@@ -175,11 +172,10 @@ extern Q_DECL_EXPORT mrb_value mapObject(mrb_state* M, mrb_value self);
 extern Q_DECL_EXPORT mrb_value mapObject(mrb_state* M, mrb_value self, mrb_value);
 extern Q_DECL_EXPORT mrb_value qobject_metaobject(mrb_state* M, mrb_value self);
 extern Q_DECL_EXPORT mrb_value set_obj_info(mrb_state* M, const char * className, smokeruby_object * o);
-extern Q_DECL_EXPORT mrb_value kross2smoke(mrb_state* M, mrb_value self);
-extern Q_DECL_EXPORT const char* value_to_type_flag(mrb_state* M, mrb_value const& ruby_value);
-extern Q_DECL_EXPORT mrb_value prettyPrintMethod(mrb_state* M, Smoke::Index id);
 
 extern Q_DECL_EXPORT Smoke::ModuleIndex
 do_method_missing(mrb_state* M, char const* pkg, std::string method, RClass* cls, int argc, mrb_value const* argv);
+
+Smoke::ModuleIndex find_pclassid(char const* p);
 
 #endif

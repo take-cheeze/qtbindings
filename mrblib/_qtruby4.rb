@@ -23,77 +23,26 @@ module Qt
     Off, Minimal, High, Extensive = 0, 1, 2, 3
   end
 
-  module QtDebugChannel
-    QTDB_NONE = 0x00
-    QTDB_AMBIGUOUS = 0x01
-    QTDB_METHOD_MISSING = 0x02
-    QTDB_CALLS = 0x04
-    QTDB_GC = 0x08
-    QTDB_VIRTUAL = 0x10
-    QTDB_VERBOSE = 0x20
-    QTDB_ALL = QTDB_VERBOSE | QTDB_VIRTUAL | QTDB_GC | QTDB_CALLS | QTDB_METHOD_MISSING | QTDB_AMBIGUOUS
+  module DebugChannel
+    NONE = 0x00
+    AMBIGUOUS = 0x01
+    METHOD_MISSING = 0x02
+    CALLS = 0x04
+    GC = 0x08
+    VIRTUAL = 0x10
+    VERBOSE = 0x20
+    ALL = VERBOSE | VIRTUAL | GC | CALLS | METHOD_MISSING | AMBIGUOUS
   end
 
   @@debug_level = DebugLevel::Off
-  def Qt.debug_level=(level)
+  def self.debug_level=(level)
     @@debug_level = level
-    Internal::setDebug Qt::QtDebugChannel::QTDB_ALL if level >= DebugLevel::Extensive
+    Internal::setDebug Qt::DebugChannel::ALL if level >= DebugLevel::Extensive
   end
 
   def Qt.debug_level; @@debug_level end
 
-  module Internal
-    #
-    # From the enum MethodFlags in qt-copy/src/tools/moc/generator.cpp
-    #
-    AccessPrivate = 0x00
-    AccessProtected = 0x01
-    AccessPublic = 0x02
-    MethodMethod = 0x00
-    MethodSignal = 0x04
-    MethodSlot = 0x08
-    MethodCompatibility = 0x10
-    MethodCloned = 0x20
-    MethodScriptable = 0x40
-  end
-
   class Base
-    def self.signals(*signal_list)
-      meta = Qt::Meta[self.name] || Qt::MetaInfo.new(self)
-      meta.add_signals(signal_list, Internal::MethodSignal | Internal::AccessProtected)
-      meta.changed = true
-    end
-
-    def self.slots(*slot_list)
-      meta = Qt::Meta[self.name] || Qt::MetaInfo.new(self)
-      meta.add_slots(slot_list, Internal::MethodSlot | Internal::AccessPublic)
-      meta.changed = true
-    end
-
-    def self.private_slots(*slot_list)
-      meta = Qt::Meta[self.name] || Qt::MetaInfo.new(self)
-      meta.add_slots(slot_list, Internal::MethodSlot | Internal::AccessPrivate)
-      meta.changed = true
-    end
-
-    def self.q_signal(signal)
-      meta = Qt::Meta[self.name] || Qt::MetaInfo.new(self)
-      meta.add_signals([signal], Internal::MethodSignal | Internal::AccessProtected)
-      meta.changed = true
-    end
-
-    def self.q_slot(slot)
-      meta = Qt::Meta[self.name] || Qt::MetaInfo.new(self)
-      meta.add_slots([slot], Internal::MethodSlot | Internal::AccessPublic)
-      meta.changed = true
-    end
-
-    def self.q_classinfo(key, value)
-      meta = Qt::Meta[self.name] || Qt::MetaInfo.new(self)
-      meta.add_classinfo(key, value)
-      meta.changed = true
-    end
-
     def **(a) return Qt::**(self, a) end
     def +(a) Qt::+(self, a) end
     def ~(a) Qt::~(self, a) end
@@ -112,115 +61,43 @@ module Qt
 
 #    Module has '<', '<=', '>' and '>=' operator instance methods, so pretend they
 #    don't exist by calling method_missing() explicitly
-    def <(a)
-      begin
-        Qt::method_missing(:<, self, a)
-      rescue
-        super(a)
-      end
-    end
+    def <(a) begin; Qt::method_missing :<, self, a; rescue; super(a) end end
+    def <=(a) begin; Qt::method_missing :<=, self, a; rescue; super a end end
+    def >(a) begin; Qt::method_missing :>, self, a; rescue; super a end end
+    def >=(a) begin; Qt::method_missing :>=, self, a; rescue; super a end end
 
-    def <=(a)
-      begin
-        Qt::method_missing(:<=, self, a)
-      rescue
-        super(a)
-      end
-    end
-
-    def >(a)
-      begin
-        Qt::method_missing(:>, self, a)
-      rescue
-        super(a)
-      end
-    end
-
-    def >=(a)
-      begin
-        Qt::method_missing(:>=, self, a)
-      rescue
-        super(a)
-      end
-    end
-
-#    Object has a '==' operator instance method, so pretend it
-#    don't exist by calling method_missing() explicitly
+    #    Object has a '==' operator instance method, so pretend it
+    #    don't exist by calling method_missing() explicitly
     def ==(a)
       return false if a.nil?
-      begin
-        Qt::method_missing(:==, self, a)
-      rescue
-        super(a)
+      begin; Qt::method_missing(:==, self, a)
+      rescue; super(a)
       end
-    end
-
-    def self.ancestors
-      klass = self
-      classid = nil
-      loop do
-        classid = Qt::Internal::find_pclassid(klass.name)
-        break if classid.index
-
-        klass = klass.superclass
-        if klass.nil?
-          return super
-        end
-      end
-
-      klasses = super
-      klasses.delete(Qt::Base)
-      klasses.delete(self)
-      ids = []
-      Qt::Internal::getAllParents(classid, ids)
-      return [self] + ids.map {|id| Qt::Internal::Classes[Qt::Internal.classid2name(id)] } + klasses
     end
 
     # Change the behaviors of is_a? and kind_of? (alias of is_a?) to use above self.ancestors method
     # Note: this definition also affects Object#===
-    def is_a?(mod)
-      super || self.class.ancestors.include?(mod)
-    end
+    def is_a?(mod) super || self.class.ancestors.include?(mod) end
     alias :kind_of? :is_a?
 
     def methods(regular=true)
       return singleton_methods if !regular
-
-      qt_methods(super, 0x0)
+      qt_methods super, 0x0
     end
 
-    def protected_methods(all=true)
-      # From smoke.h, Smoke::mf_protected 0x80
-      qt_methods(super, 0x80)
-    end
+    # From smoke.h, Smoke::mf_protected 0x80
+    def protected_methods(all=true) qt_methods super, 0x80 end
 
-    def public_methods(all=true)
-      methods
-    end
+    def public_methods(all=true) methods end
 
-    def singleton_methods(all=true)
-      # From smoke.h, Smoke::mf_static 0x01
-      qt_methods(super, 0x01)
-    end
+    # From smoke.h, Smoke::mf_static 0x01
+    def singleton_methods(all=true) qt_methods super, 0x01 end
 
     def self.qt_overwrite_method(*names)
       names.each do |n|
         n = n.to_sym
         define_method(n) { |*args, &block| method_missing(n, *args, &block) }
       end
-    end
-
-    private
-    def qt_methods(meths, flags)
-      ids = []
-      # These methods are all defined in Qt::Base, even if they aren't supported by a particular
-      # subclass, so remove them to avoid confusion
-      meths -= ["%", "&", "*", "**", "+", "-", "-@", "/", "<", "<<", "<=", ">", ">=", ">>", "|", "~", "^"]
-      classid = Qt::Internal::idInstance(self)
-      Qt::Internal::getAllParents(classid, ids)
-      ids << classid
-      ids.each { |c| Qt::Internal::findAllMethodNames(meths, c, flags) }
-      return meths.uniq
     end
   end # Qt::Base
 
@@ -267,10 +144,7 @@ module Qt
   # method resolution when two methods differ only by an enum type.
   class Enum
     attr_accessor :type, :value
-    def initialize(n, enum_type)
-      @value = n
-      @type = enum_type
-    end
+    def initialize(n, e) @value, @type = n, e.to_sym end
 
     def +(n) @value + n.to_i end
     def -(n) @value - n.to_i end
@@ -311,6 +185,12 @@ module Qt
     attr_accessor :value
     def initialize(b=false) @value = b end
     def nil?; !@value end
+  end
+
+  module Internal
+    Classes['Qt::Integer'.to_sym] = Qt::Integer
+    Classes['Qt::Boolean'.to_sym] = Qt::Boolean
+    Classes['Qt::Enum'.to_sym] = Qt::Enum
   end
 
   [
@@ -388,6 +268,7 @@ module Qt
     [Library, :load],
     [ListWidgetItem, :type],
     [Locale, [:name, :system]],
+    [MainWindow, :raise],
     [Menu, :exec],
     [MetaClassInfo, :name],
     [MetaEnum, :name],
@@ -699,13 +580,7 @@ module Qt
       end
     end
 
-    def <<(a)
-      if a.kind_of?(Qt::Variant)
-        return super(a)
-      else
-        return super(qVariantFromValue(a))
-      end
-    end
+    def <<(a) a.kind_of?(Qt::Variant) ? super(a) : super(qVariantFromValue a) end
   end
 
   class DBusReply
@@ -883,70 +758,32 @@ module Qt
 
     def propertyNames(inherits = false)
       res = []
-      if inherits
-        for p in 0...propertyCount()
-          res.push property(p).name
-        end
-      else
-        for p in propertyOffset()...propertyCount()
-          res.push property(p).name
-        end
-      end
+      for p in (inherits ? 0 : propertyOffset)...propertyCount; res.push property(p).name end
       return res
     end
 
     def slotNames(inherits = false)
       res = []
-      if inherits
-        for m in 0...methodCount()
-          if method(m).methodType == Qt::MetaMethod::Slot
-            res.push "%s %s" % [method(m).typeName == "" ? "void" : method(m).typeName,
-                      method(m).signature]
-          end
-        end
-      else
-        for m in methodOffset()...methodCount()
-          if method(m).methodType == Qt::MetaMethod::Slot
-            res.push "%s %s" % [method(m).typeName == "" ? "void" : method(m).typeName,
-                      method(m).signature]
-          end
-        end
+      for m in (inherits ? 0 : methodOffset)...methodCount
+        res.push "%s %s" % [method(m).typeName == "" ? "void" : method(m).typeName,
+          method(m).signature] if method(m).methodType == Qt::MetaMethod::Slot
       end
-      return res
+      res
     end
 
     def signalNames(inherits = false)
       res = []
-      if inherits
-        for m in 0...methodCount()
-          if method(m).methodType == Qt::MetaMethod::Signal
-            res.push "%s %s" % [method(m).typeName == "" ? "void" : method(m).typeName,
-                      method(m).signature]
-          end
-        end
-      else
-        for m in methodOffset()...methodCount()
-          if method(m).methodType == Qt::MetaMethod::Signal
-            res.push "%s %s" % [method(m).typeName == "" ? "void" : method(m).typeName,
-                      method(m).signature]
-          end
-        end
+      for m in (inherits ? 0 : methodOffset)...methodCount
+        res.push "%s %s" % [method(m).typeName == "" ? "void" : method(m).typeName,
+          method(m).signature] if method(m).methodType == Qt::MetaMethod::Signal
       end
-      return res
+      res
     end
 
     def enumerators(inherits = false)
       res = []
-      if inherits
-        for e in 0...enumeratorCount()
-          res.push enumerator(e)
-        end
-      else
-        for e in enumeratorOffset()...enumeratorCount()
-          res.push enumerator(e)
-        end
-      end
-      return res
+      for e in (inherits ? 0 : enumeratorOffset)...enumeratorCount; res.push enumerator(e) end
+      res
     end
 
     def inspect
@@ -1276,97 +1113,55 @@ module Qt
 
     def value
       case type()
-      when Qt::Variant::Invalid
-        return nil
+      when Qt::Variant::Invalid; return nil
       when Qt::Variant::Bitmap
-      when Qt::Variant::Bool
-        return toBool
-      when Qt::Variant::Brush
-        return qVariantValue(Qt::Brush, self)
-      when Qt::Variant::ByteArray
-        return toByteArray
-      when Qt::Variant::Char
-        return qVariantValue(Qt::Char, self)
-      when Qt::Variant::Color
-        return qVariantValue(Qt::Color, self)
-      when Qt::Variant::Cursor
-        return qVariantValue(Qt::Cursor, self)
-      when Qt::Variant::Date
-        return toDate
-      when Qt::Variant::DateTime
-        return toDateTime
-      when Qt::Variant::Double
-        return toDouble
-      when Qt::Variant::Font
-        return qVariantValue(Qt::Font, self)
-      when Qt::Variant::Icon
-        return qVariantValue(Qt::Icon, self)
-      when Qt::Variant::Image
-        return qVariantValue(Qt::Image, self)
-      when Qt::Variant::Int
-        return toInt
-      when Qt::Variant::KeySequence
-        return qVariantValue(Qt::KeySequence, self)
-      when Qt::Variant::Line
-        return toLine
-      when Qt::Variant::LineF
-        return toLineF
-      when Qt::Variant::List
-        return toList
-      when Qt::Variant::Locale
-        return qVariantValue(Qt::Locale, self)
-      when Qt::Variant::LongLong
-        return toLongLong
-      when Qt::Variant::Map
-        return toMap
-      when Qt::Variant::Palette
-        return qVariantValue(Qt::Palette, self)
-      when Qt::Variant::Pen
-        return qVariantValue(Qt::Pen, self)
-      when Qt::Variant::Pixmap
-        return qVariantValue(Qt::Pixmap, self)
-      when Qt::Variant::Point
-        return toPoint
-      when Qt::Variant::PointF
-        return toPointF
-      when Qt::Variant::Polygon
-        return qVariantValue(Qt::Polygon, self)
-      when Qt::Variant::Rect
-        return toRect
-      when Qt::Variant::RectF
-        return toRectF
-      when Qt::Variant::RegExp
-        return toRegExp
-      when Qt::Variant::Region
-        return qVariantValue(Qt::Region, self)
-      when Qt::Variant::Size
-        return toSize
-      when Qt::Variant::SizeF
-        return toSizeF
-      when Qt::Variant::SizePolicy
-        return toSizePolicy
-      when Qt::Variant::String
-        return toString
-      when Qt::Variant::StringList
-        return toStringList
-      when Qt::Variant::TextFormat
-        return qVariantValue(Qt::TextFormat, self)
-      when Qt::Variant::TextLength
-        return qVariantValue(Qt::TextLength, self)
-      when Qt::Variant::Time
-        return toTime
-      when Qt::Variant::UInt
-        return toUInt
-      when Qt::Variant::ULongLong
-        return toULongLong
-      when Qt::Variant::Url
-        return toUrl
+      when Qt::Variant::Bool; return toBool
+      when Qt::Variant::Brush; return qVariantValue(Qt::Brush, self)
+      when Qt::Variant::ByteArray; return toByteArray
+      when Qt::Variant::Char; return qVariantValue(Qt::Char, self)
+      when Qt::Variant::Color; return qVariantValue(Qt::Color, self)
+      when Qt::Variant::Cursor; return qVariantValue(Qt::Cursor, self)
+      when Qt::Variant::Date; return toDate
+      when Qt::Variant::DateTime; return toDateTime
+      when Qt::Variant::Double; return toDouble
+      when Qt::Variant::Font; return qVariantValue(Qt::Font, self)
+      when Qt::Variant::Icon; return qVariantValue(Qt::Icon, self)
+      when Qt::Variant::Image; return qVariantValue(Qt::Image, self)
+      when Qt::Variant::Int; return toInt
+      when Qt::Variant::KeySequence; return qVariantValue(Qt::KeySequence, self)
+      when Qt::Variant::Line; return toLine
+      when Qt::Variant::LineF; return toLineF
+      when Qt::Variant::List; return toList
+      when Qt::Variant::Locale; return qVariantValue(Qt::Locale, self)
+      when Qt::Variant::LongLong; return toLongLong
+      when Qt::Variant::Map; return toMap
+      when Qt::Variant::Palette; return qVariantValue(Qt::Palette, self)
+      when Qt::Variant::Pen; return qVariantValue(Qt::Pen, self)
+      when Qt::Variant::Pixmap; return qVariantValue(Qt::Pixmap, self)
+      when Qt::Variant::Point; return toPoint
+      when Qt::Variant::PointF; return toPointF
+      when Qt::Variant::Polygon; return qVariantValue(Qt::Polygon, self)
+      when Qt::Variant::Rect; return toRect
+      when Qt::Variant::RectF; return toRectF
+      when Qt::Variant::RegExp; return toRegExp
+      when Qt::Variant::Region; return qVariantValue(Qt::Region, self)
+      when Qt::Variant::Size; return toSize
+      when Qt::Variant::SizeF; return toSizeF
+      when Qt::Variant::SizePolicy; return toSizePolicy
+      when Qt::Variant::String; return toString
+      when Qt::Variant::StringList; return toStringList
+      when Qt::Variant::TextFormat; return qVariantValue(Qt::TextFormat, self)
+      when Qt::Variant::TextLength; return qVariantValue(Qt::TextLength, self)
+      when Qt::Variant::Time; return toTime
+      when Qt::Variant::UInt; return toUInt
+      when Qt::Variant::ULongLong; return toULongLong
+      when Qt::Variant::Url; return toUrl
       end
 
       return qVariantValue(nil, self)
     end
 
-    def inspect; super().sub(/>$/, " typeName=%s>" % typeName) end
+    def inspect; super.sub(/>$/, " typeName=%s>" % typeName) end
     def pretty_print(pp) pp.text to_s.sub(/>$/, " typeName=%s>" % typeName) end
   end
 
@@ -1386,10 +1181,8 @@ module Qt
 
   class SignalBlockInvocation < Qt::Object
     def initialize(parent, block, signature)
-      super(parent)
-      if metaObject.indexOfSlot(signature) == -1
-        self.class.slots signature
-      end
+      super parent
+      self.class.slots signature if metaObject.indexOfSlot(signature) == -1
       @block = block
     end
 
@@ -1398,10 +1191,8 @@ module Qt
 
   class BlockInvocation < Qt::Object
     def initialize(target, block, signature)
-      super(target)
-      if metaObject.indexOfSlot(signature) == -1
-        self.class.slots signature
-      end
+      super target
+      self.class.slots signature if metaObject.indexOfSlot(signature) == -1
       @block = block
     end
 
@@ -1410,290 +1201,13 @@ module Qt
 
   class MethodInvocation < Qt::Object
     def initialize(target, method, signature)
-      super(target)
-      if metaObject.indexOfSlot(signature) == -1
-        self.class.slots signature
-      end
-      @target = target
-      method = method.intern unless method.is_a?Symbol
-      @method = method
+      super target
+      self.class.slots signature if metaObject.indexOfSlot(signature) == -1
+      @target, @method = target, method.to_sym
     end
 
     def invoke(*args) @target.send @method, *args end
   end
-
-  module Internal
-    class ModuleIndex
-      attr_accessor :index
-
-      def smoke
-        if ! @smoke
-            return 0
-        end
-        return @smoke
-      end
-
-      def initialize(smoke, index)
-        @smoke = smoke
-        @index = index
-      end
-    end
-
-    def Internal.debug_level
-      Qt.debug_level
-    end
-
-    Classes['Qt::Integer'] = Qt::Integer
-    Classes['Qt::Boolean'] = Qt::Boolean
-    Classes['Qt::Enum'] = Qt::Enum
-
-    def Internal.get_qinteger(num) num.value end
-    def Internal.set_qinteger(num, val) num.value = val end
-
-    def Internal.create_qenum(num, enum_type) Qt::Enum.new(num, enum_type) end
-
-    def Internal.get_qenum_type(e) e.type end
-    def Internal.get_qboolean(b) b.value end
-    def Internal.set_qboolean(b, val) b.value = val end
-
-    def Internal.getAllParents(class_id, res)
-      getIsa(class_id).each do |s|
-        c = findClass(s)
-        res << c
-        getAllParents(c, res)
-      end
-    end
-
-    # Keeps a hash of strings against their corresponding offsets
-    # within the qt_meta_stringdata sequence of null terminated
-    # strings. Returns a proc to get an offset given a string.
-    # That proc also adds new strings to the 'data' array, and updates
-    # the corresponding 'pack_str' Array#pack template.
-    def Internal.string_table_handler(data, pack_str)
-      hsh = {}
-      offset = 0
-      return lambda do |str|
-        if !hsh.has_key? str
-          hsh[str] = offset
-          data << str
-          pack_str << "a*x"
-          offset += str.length + 1
-        end
-
-        return hsh[str]
-      end
-    end
-
-    def Internal.makeMetaData(classname, classinfos, dbus, signals, slots)
-      # Each entry in 'stringdata' corresponds to a string in the
-      # qt_meta_stringdata_<classname> structure.
-      # 'pack_string' is used to convert 'stringdata' into the
-      # binary sequence of null terminated strings for the metaObject
-      stringdata = []
-      pack_string = ""
-      string_table = string_table_handler(stringdata, pack_string)
-
-      # This is used to create the array of uints that make up the
-      # qt_meta_data_<classname> structure in the metaObject
-      data = [1,                 # revision
-          string_table.call(classname),   # classname
-          classinfos.length, classinfos.length > 0 ? 10 : 0,   # classinfo
-          signals.length + slots.length,
-          10 + (2*classinfos.length),   # methods
-          0, 0,               # properties
-          0, 0]              # enums/sets
-
-      classinfos.each do |entry|
-        data.push string_table.call(entry[0])    # key
-        data.push string_table.call(entry[1])    # value
-      end
-
-      signals.each do |entry|
-        data.push string_table.call(entry.full_name)        # signature
-        data.push string_table.call(entry.full_name.delete("^,"))  # parameters
-        data.push string_table.call(entry.reply_type)        # type, "" means void
-        data.push string_table.call("")        # tag
-        if dbus
-          data.push MethodScriptable | MethodSignal | AccessPublic
-        else
-          data.push entry.access  # flags, always protected for now
-        end
-      end
-
-      slots.each do |entry|
-        data.push string_table.call(entry.full_name)        # signature
-        data.push string_table.call(entry.full_name.delete("^,"))  # parameters
-        data.push string_table.call(entry.reply_type)        # type, "" means void
-        data.push string_table.call("")        # tag
-        if dbus
-          data.push MethodScriptable | MethodSlot | AccessPublic  # flags, always public for now
-        else
-          data.push entry.access    # flags, always public for now
-        end
-      end
-
-      data.push 0    # eod
-
-      return [stringdata.pack(pack_string), data]
-    end
-
-    def Internal.getMetaObject(klass, qobject)
-      klass = qobject.class if klass.nil?
-
-      parentMeta = nil
-      parentMeta = getMetaObject(klass.superclass, qobject) if
-        CppNames[klass.superclass.name].nil?
-
-      meta = Meta[klass.name]
-      meta = Qt::MetaInfo.new(klass) if meta.nil?
-
-      if meta.metaobject.nil? or meta.changed
-        stringdata, data = makeMetaData(  qobject.class.name,
-                          meta.classinfos,
-                          meta.dbus,
-                          meta.signals,
-                          meta.slots )
-        meta.metaobject = make_metaObject(qobject, parentMeta, stringdata, data)
-        meta.changed = false
-      end
-
-      meta.metaobject
-    end
-
-    # Handles calls of the form:
-    #  connect(myobj, SIGNAL('mysig(int)'), mytarget) {|arg(s)| ...}
-    #  connect(myobj, SIGNAL('mysig(int)')) {|arg(s)| ...}
-    #  connect(myobj, SIGNAL(:mysig), mytarget) { ...}
-    #  connect(myobj, SIGNAL(:mysig)) { ...}
-    def Internal.connect(src, signal, target, block)
-      args = (signal =~ /\((.*)\)/) ? $1 : ""
-      signature = Qt::MetaObject.normalizedSignature("invoke(%s)" % args).to_s
-      return Qt::Object.connect(  src,
-                    signal,
-                    Qt::BlockInvocation.new(target, block.to_proc, signature),
-                    SLOT(signature) )
-    end
-
-    # Handles calls of the form:
-    #  connect(SIGNAL(:mysig)) { ...}
-    #  connect(SIGNAL('mysig(int)')) {|arg(s)| ...}
-    def Internal.signal_connect(src, signal, block)
-      args = (signal =~ /\((.*)\)/) ? $1 : ""
-      signature = Qt::MetaObject.normalizedSignature("invoke(%s)" % args).to_s
-      return Qt::Object.connect(  src,
-                    signal,
-                    Qt::SignalBlockInvocation.new(src, block.to_proc, signature),
-                    SLOT(signature) )
-    end
-
-    # Handles calls of the form:
-    #  connect(:mysig, mytarget, :mymethod))
-    #  connect(SIGNAL('mysignal(int)'), mytarget, :mymethod))
-    def Internal.method_connect(src, signal, target, method)
-      signal = SIGNAL(signal) if signal.is_a?Symbol
-      args = (signal =~ /\((.*)\)/) ? $1 : ""
-      signature = Qt::MetaObject.normalizedSignature("invoke(%s)" % args).to_s
-      return Qt::Object.connect(  src,
-                    signal,
-                    Qt::MethodInvocation.new(target, method, signature),
-                    SLOT(signature) )
-    end
-
-    # Handles calls of the form:
-    #  Qt::Timer.singleShot(500, myobj) { ...}
-    def Internal.single_shot_timer_connect(interval, target, block)
-      return Qt::Timer.singleShot(  interval,
-                      Qt::BlockInvocation.new(target, block, "invoke()"),
-                      SLOT("invoke()") )
-    end
-  end # Qt::Internal
-
-  Meta = {}
-
-  # An entry for each signal or slot
-  # Example
-  #  int foobar(QString,bool)
-  #  :name is 'foobar'
-  #  :full_name is 'foobar(QString,bool)'
-  #  :arg_types is 'QString,bool'
-  #  :reply_type is 'int'
-  QObjectMember = Struct.new :name, :full_name, :arg_types, :reply_type, :access
-
-  class MetaInfo
-    attr_accessor :classinfos, :dbus, :signals, :slots, :metaobject, :mocargs, :changed
-
-    def initialize(klass)
-      Meta[klass.name] = self
-      @klass = klass
-      @metaobject = nil
-      @signals = []
-      @slots = []
-      @classinfos = []
-      @dbus = false
-      @changed = false
-      Internal.addMetaObjectMethods(klass)
-    end
-
-    def add_signals(signal_list, access)
-      signal_names = []
-      signal_list.each do |signal|
-        if signal.kind_of? Symbol
-          signal = signal.to_s + "()"
-        end
-        signal = Qt::MetaObject.normalizedSignature(signal).to_s
-        if signal =~ /^(([\w,<>:]*)\s+)?([^\s]*)\((.*)\)/
-          @signals.push QObjectMember.new(  $3,
-                                              $3 + "(" + $4 + ")",
-                                              $4,
-                                              ($2 == 'void' || $2.nil?) ? "" : $2,
-                                              access )
-          signal_names << $3
-        else
-          qWarning( "#{@klass.name}: Invalid signal format: '#{signal}'" )
-        end
-      end
-      Internal.addSignalMethods(@klass, signal_names)
-    end
-
-    # Return a list of signals, including inherited ones
-    def get_signals
-      all_signals = []
-      current = @klass
-      while current != Qt::Base
-        meta = Meta[current.name]
-        if !meta.nil?
-          all_signals.concat meta.signals
-        end
-        current = current.superclass
-      end
-      return all_signals
-    end
-
-    def add_slots(slot_list, access)
-      slot_list.each do |slot|
-        if slot.kind_of? Symbol
-          slot = slot.to_s + "()"
-        end
-        slot = Qt::MetaObject.normalizedSignature(slot).to_s
-        if slot =~ /^(([\w,<>:]*)\s+)?([^\s]*)\((.*)\)/
-          @slots.push QObjectMember.new(  $3,
-                                          $3 + "(" + $4 + ")",
-                                          $4,
-                                          ($2 == 'void' || $2.nil?) ? "" : $2,
-                                          access )
-        else
-          qWarning( "#{@klass.name}: Invalid slot format: '#{slot}'" )
-        end
-      end
-    end
-
-    def add_classinfo(key, value)
-      @classinfos.push [key, value]
-      if key == 'D-Bus Interface'
-        @dbus = true
-      end
-    end
-  end # Qt::MetaInfo
 
   # These values are from the enum WindowType in qnamespace.h.
   # Some of the names such as 'Qt::Dialog', clash with QtRuby
@@ -1714,13 +1228,8 @@ module Qt
 end # Qt
 
 class Object
-  def SIGNAL(signal)
-    signal.kind_of? Symbol ? "2#{signal.to_s}()" : "2#{signal}"
-  end
-
-  def SLOT(slot)
-    slot.kind_of? Symbol ? "1#{slot.to_s}()" : "1#{slot}"
-  end
+  def SIGNAL(signal) (signal.kind_of? Symbol)? "2#{signal}()" : "2#{signal}" end
+  def SLOT(slot) (slot.kind_of? Symbol)? "1#{slot}()" : "1#{slot}" end
 
   def emit(signal) signal end
 
@@ -1766,39 +1275,10 @@ class Module
   def public_methods(inc_super=true)
     qt_methods(_public_methods(inc_super), 0x0, inc_super)
   end
-
-  private
-  def qt_methods(meths, flags, inc_super=true)
-    if !self.kind_of? Class
-      return meths
-    end
-
-    klass = self
-    classid = Qt::Internal::ModuleIndex.new(0, 0)
-    loop do
-      classid = Qt::Internal::find_pclassid(klass.name)
-      break if classid.index
-
-      klass = klass.superclass
-      if klass.nil?
-        return meths
-      end
-    end
-
-    # These methods are all defined in Qt::Base, even if they aren't supported by a particular
-    # subclass, so remove them to avoid confusion
-    meths -= ["%", "&", "*", "**", "+", "-", "-@", "/", "<", "<<", "<=", ">", ">=", ">>", "|", "~", "^"]
-    ids = []
-    if inc_super
-      Qt::Internal::getAllParents(classid, ids)
-    end
-    ids << classid
-    ids.each { |c| Qt::Internal::findAllMethodNames(meths, c, flags) }
-    return meths.uniq
-  end
 end
 
 class String
   def =~(rex) rex.match self end
   def !~(rex) not rex.match self end
+  def %(*args) sprintf self, *args end
 end

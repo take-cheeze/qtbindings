@@ -36,10 +36,12 @@ extern void smokeStackFromQtStack(mrb_state* M, Smoke::Stack stack, void ** _o, 
 
 namespace QtRuby {
 
+typedef Smoke::ModuleIndex ModuleIndex;
+
 class Q_DECL_EXPORT MethodReturnValueBase : public Marshall 
 {
 public:
-	MethodReturnValueBase(mrb_state* M, Smoke *smoke, Smoke::Index meth, Smoke::Stack stack);
+	MethodReturnValueBase(mrb_state* M, ModuleIndex const& idx, Smoke::Stack stack);
 	const Smoke::Method &method();
 	Smoke::StackItem &item();
 	Smoke *smoke();
@@ -49,8 +51,7 @@ public:
 	void unsupported();
     mrb_value * var();
 protected:
-	Smoke *_smoke;
-	Smoke::Index _method;
+	ModuleIndex _module_index;
 	Smoke::Stack _stack;
 	SmokeType _st;
 	mrb_value *_retval;
@@ -60,7 +61,7 @@ protected:
 
 class Q_DECL_EXPORT VirtualMethodReturnValue : public MethodReturnValueBase {
 public:
-	VirtualMethodReturnValue(mrb_state* M, Smoke *smoke, Smoke::Index meth, Smoke::Stack stack, mrb_value retval);
+	VirtualMethodReturnValue(mrb_state* M, ModuleIndex const& idx, Smoke::Stack stack, mrb_value retval);
 	Marshall::Action action();
 
 private:
@@ -70,7 +71,7 @@ private:
 
 class Q_DECL_EXPORT MethodReturnValue : public MethodReturnValueBase {
 public:
-	MethodReturnValue(mrb_state* M, Smoke *smoke, Smoke::Index meth, Smoke::Stack stack, mrb_value * retval);
+	MethodReturnValue(mrb_state* M, ModuleIndex const& idx, Smoke::Stack stack, mrb_value * retval);
     Marshall::Action action();
 
 private:
@@ -80,8 +81,8 @@ private:
 class Q_DECL_EXPORT MethodCallBase : public Marshall
 {
 public:
-	MethodCallBase(mrb_state* M, Smoke *smoke, Smoke::Index meth);
-	MethodCallBase(mrb_state* M, Smoke *smoke, Smoke::Index meth, Smoke::Stack stack);
+	MethodCallBase(mrb_state* M, ModuleIndex const& idx);
+	MethodCallBase(mrb_state* M, ModuleIndex const& idx, Smoke::Stack stack);
 	Smoke *smoke();
 	SmokeType type();
 	Smoke::StackItem &item();
@@ -92,8 +93,7 @@ public:
 	void unsupported();
 
 protected:
-	Smoke *_smoke;
-	Smoke::Index _method;
+	ModuleIndex _module_index;
 	Smoke::Stack _stack;
 	int _cur;
 	Smoke::Index *_args;
@@ -105,7 +105,7 @@ protected:
 
 class Q_DECL_EXPORT VirtualMethodCall : public MethodCallBase {
 public:
-	VirtualMethodCall(mrb_state* M, Smoke *smoke, Smoke::Index meth, Smoke::Stack stack, mrb_value obj,mrb_value *sp);
+	VirtualMethodCall(mrb_state* M, ModuleIndex const& idx, Smoke::Stack stack, mrb_value obj,mrb_value *sp);
 	~VirtualMethodCall();
 	Marshall::Action action();
 	mrb_value * var();
@@ -120,39 +120,12 @@ private:
 
 class Q_DECL_EXPORT MethodCall : public MethodCallBase {
 public:
-	MethodCall(mrb_state* M, Smoke *smoke, Smoke::Index method, mrb_value target, mrb_value *sp, int items);
+	MethodCall(mrb_state* M, ModuleIndex const& idx, mrb_value target, mrb_value *sp, int items);
 	~MethodCall();
 	Marshall::Action action();
 	mrb_value * var();
 
-	inline void callMethod() {
-		if(_called) return;
-		_called = true;
-
-		if (mrb_nil_p(_target) && !(method().flags & Smoke::mf_static)) {
-			mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "%s is not a class method\n", _smoke->methodNames[method().name]);
-		}
-	
-		Smoke::ClassFn fn = _smoke->classes[method().classId].classFn;
-		void * ptr = 0;
-
-		if (_o != 0) {
-			const Smoke::Class &cl = _smoke->classes[method().classId];
-
-			ptr = _o->smoke->cast(	_o->ptr,
-									_o->classId,
-									_o->smoke->idClass(cl.className, true).index );
-		}
-
-		_items = -1;
-		(*fn)(method().method, ptr, _stack);
-		if (method().flags & Smoke::mf_ctor) {
-			Smoke::StackItem s[2];
-			s[1].s_voidp = qtruby_modules[_smoke].binding;
-			(*fn)(0, _stack[0].s_voidp, s);
-		}
-		MethodReturnValue r(M, _smoke, _method, _stack, &_retval);
-	}
+	void callMethod();
 
 	int items();
 	bool cleanup();

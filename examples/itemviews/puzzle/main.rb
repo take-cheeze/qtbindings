@@ -31,6 +31,6 @@ window = MainWindow.new
 window.openImage("example.jpg")
 window.show
 GC.disable
-# Qt::Internal::setDebug Qt::QtDebugChannel::QTDB_GC
+# Qt::Internal::debug = Qt::DebugChannel::GC
 
 app.exec

@@ -34,7 +34,7 @@
 
 static bool qtruby_embedded = false;
 
-Q_DECL_EXPORT void 
+Q_DECL_EXPORT void
 set_qtruby_embedded(bool yn) {
 #if !defined(RUBY_INIT_STACK)
     if (yn) {
@@ -44,31 +44,6 @@ set_qtruby_embedded(bool yn) {
 #endif
     qtruby_embedded = yn;
 }
-
-// This is based on the SWIG SWIG_INIT_STACK and SWIG_RELEASE_STACK macros.
-// If RUBY_INIT_STACK is only called when an embedded extension such as, a
-// Ruby Plasma plugin is loaded, then later the C++ stack can drop below where the 
-// Ruby runtime thinks the stack should start (ie the stack position when the 
-// plugin was loaded), and result in sys stackerror exceptions
-//
-// TODO: While constructing the main class of a plugin when it is being loaded, 
-// there could be a problem when a custom virtual method is called or a slot is
-// invoked, because RUBY_INIT_STACK will have aleady have been called from within 
-// the krubypluginfactory code, and it shouldn't be called again.
-
-#if defined(RUBY_INIT_STACK)
-#  define QTRUBY_INIT_STACK                            \
-      if ( qtruby_embedded && nested_callback_count == 0 ) { RUBY_INIT_STACK } \
-      nested_callback_count++;
-#  define QTRUBY_RELEASE_STACK nested_callback_count--;
-
-static unsigned int nested_callback_count = 0;
-
-#else  /* normal non-embedded extension */
-
-#  define QTRUBY_INIT_STACK
-#  define QTRUBY_RELEASE_STACK
-#endif  /* RUBY_EMBEDDED */
 
 /*
 //
@@ -174,7 +149,7 @@ smokeStackToQtStack(mrb_state* M, Smoke::Stack stack, void ** o, int start, int 
 				// allocate a new enum value
 				Smoke::EnumFn fn = SmokeClass(t).enumFn();
 				if (!fn) {
-					mrb_warn(M, "Unknown enumeration %S\n", mrb_str_new_cstr(M, t.name()));
+					mrb_warn(M, "Unknown enumeration %S\n", mrb_intern_cstr(M, t.name()));
 					p = new int((int)si->s_enum);
 					break;
 				}
@@ -273,7 +248,7 @@ smokeStackFromQtStack(mrb_state* M, Smoke::Stack stack, void ** _o, int start, i
 			{
 				Smoke::EnumFn fn = SmokeClass(t).enumFn();
 				if (!fn) {
-					mrb_warn(M, "Unknown enumeration %S\n", mrb_str_new_cstr(M, t.name()));
+					mrb_warn(M, "Unknown enumeration %S\n", mrb_intern_cstr(M, t.name()));
 					stack[j].s_enum = *(int*)o;
 					break;
 				}
@@ -297,140 +272,140 @@ smokeStackFromQtStack(mrb_state* M, Smoke::Stack stack, void ** _o, int start, i
 
 namespace QtRuby {
 
-MethodReturnValueBase::MethodReturnValueBase(mrb_state* M, Smoke *smoke, Smoke::Index meth, Smoke::Stack stack) :
+MethodReturnValueBase::MethodReturnValueBase(mrb_state* M, ModuleIndex const& idx, Smoke::Stack stack) :
     Marshall(M),
-	_smoke(smoke), _method(meth), _stack(stack) 
-{ 
-	_st.set(_smoke, method().ret);
+	_module_index(idx), _stack(stack)
+{
+	_st.set(idx.smoke, method().ret);
 }
 
 const Smoke::Method&
-MethodReturnValueBase::method() 
-{ 
-	return _smoke->methods[_method]; 
+MethodReturnValueBase::method()
+{
+	return _module_index.smoke->methods[_module_index.index];
 }
 
 Smoke::StackItem&
-MethodReturnValueBase::item() 
-{ 
-	return _stack[0]; 
+MethodReturnValueBase::item()
+{
+	return _stack[0];
 }
 
 Smoke *
-MethodReturnValueBase::smoke() 
-{ 
-	return _smoke; 
+MethodReturnValueBase::smoke()
+{
+	return _module_index.smoke;
 }
 
-SmokeType 
-MethodReturnValueBase::type() 
-{ 
-	return _st; 
+SmokeType
+MethodReturnValueBase::type()
+{
+	return _st;
 }
 
-void 
+void
 MethodReturnValueBase::next() {}
 
-bool 
-MethodReturnValueBase::cleanup() 
-{ 
-	return false; 
+bool
+MethodReturnValueBase::cleanup()
+{
+	return false;
 }
 
-void 
-MethodReturnValueBase::unsupported() 
+void
+MethodReturnValueBase::unsupported()
 {
 	mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as return-type of %S::%S",
-             mrb_str_new_cstr(M, type().name()),
-             mrb_str_new_cstr(M, classname()),
-             mrb_str_new_cstr(M, _smoke->methodNames[method().name]));	
+             mrb_intern_cstr(M, type().name()),
+             mrb_intern_cstr(M, classname()),
+             mrb_intern_cstr(M, _module_index.smoke->methodNames[method().name]));
 }
 
-mrb_value * 
-MethodReturnValueBase::var() 
-{ 
-	return _retval; 
+mrb_value *
+MethodReturnValueBase::var()
+{
+	return _retval;
 }
 
 const char *
-MethodReturnValueBase::classname() 
-{ 
-	return _smoke->className(method().classId); 
+MethodReturnValueBase::classname()
+{
+	return _module_index.smoke->className(method().classId);
 }
 
 
-VirtualMethodReturnValue::VirtualMethodReturnValue(mrb_state* M, Smoke *smoke, Smoke::Index meth, Smoke::Stack stack, mrb_value retval) :
-    MethodReturnValueBase(M, smoke,meth,stack), _retval2(retval) 
+VirtualMethodReturnValue::VirtualMethodReturnValue(mrb_state* M, ModuleIndex const& idx, Smoke::Stack stack, mrb_value retval) :
+    MethodReturnValueBase(M, idx, stack), _retval2(retval)
 {
 	_retval = &_retval2;
 	Marshall::HandlerFn fn = getMarshallFn(type());
 	(*fn)(this);
 }
 
-Marshall::Action 
-VirtualMethodReturnValue::action() 
-{ 
-	return Marshall::FromVALUE; 
+Marshall::Action
+VirtualMethodReturnValue::action()
+{
+	return Marshall::FromVALUE;
 }
 
-MethodReturnValue::MethodReturnValue(mrb_state* M, Smoke *smoke, Smoke::Index meth, Smoke::Stack stack, mrb_value * retval) :
-    MethodReturnValueBase(M, smoke,meth,stack) 
+MethodReturnValue::MethodReturnValue(mrb_state* M, ModuleIndex const& idx, Smoke::Stack stack, mrb_value * retval) :
+    MethodReturnValueBase(M, idx, stack)
 {
 	_retval = retval;
 	Marshall::HandlerFn fn = getMarshallFn(type());
 	(*fn)(this);
 }
 
-Marshall::Action 
-MethodReturnValue::action() 
-{ 
-	return Marshall::ToVALUE; 
+Marshall::Action
+MethodReturnValue::action()
+{
+	return Marshall::ToVALUE;
 }
 
 const char *
-MethodReturnValue::classname() 
-{ 
-	return qstrcmp(MethodReturnValueBase::classname(), "QGlobalSpace") == 0 ? "" : MethodReturnValueBase::classname(); 
+MethodReturnValue::classname()
+{
+	return qstrcmp(MethodReturnValueBase::classname(), "QGlobalSpace") == 0 ? "" : MethodReturnValueBase::classname();
 }
 
 
-MethodCallBase::MethodCallBase(mrb_state* M, Smoke *smoke, Smoke::Index meth) : Marshall(M),
-	_smoke(smoke), _method(meth), _cur(-1), _called(false), _sp(0)  
-{  
+MethodCallBase::MethodCallBase(mrb_state* M, ModuleIndex const& idx) : Marshall(M),
+	_module_index(idx), _cur(-1), _called(false), _sp(0)
+{
 }
 
-MethodCallBase::MethodCallBase(mrb_state* M, Smoke *smoke, Smoke::Index meth, Smoke::Stack stack) :
+MethodCallBase::MethodCallBase(mrb_state* M, ModuleIndex const& idx, Smoke::Stack stack) :
     Marshall(M),
-	_smoke(smoke), _method(meth), _stack(stack), _cur(-1), _called(false), _sp(0) 
-{  
+	_module_index(idx), _stack(stack), _cur(-1), _called(false), _sp(0)
+{
 }
 
 Smoke *
-MethodCallBase::smoke() 
-{ 
-	return _smoke; 
+MethodCallBase::smoke()
+{
+	return _module_index.smoke;
 }
 
-SmokeType 
-MethodCallBase::type() 
-{ 
-	return SmokeType(_smoke, _args[_cur]); 
+SmokeType
+MethodCallBase::type()
+{
+	return SmokeType(_module_index.smoke, _args[_cur]);
 }
 
 Smoke::StackItem &
-MethodCallBase::item() 
-{ 
-	return _stack[_cur + 1]; 
+MethodCallBase::item()
+{
+	return _stack[_cur + 1];
 }
 
 const Smoke::Method &
-MethodCallBase::method() 
-{ 
-	return _smoke->methods[_method]; 
+MethodCallBase::method()
+{
+	return _module_index.smoke->methods[_module_index.index];
 }
-	
-void 
-MethodCallBase::next() 
+
+void
+MethodCallBase::next()
 {
 	int oldcur = _cur;
 	_cur++;
@@ -444,70 +419,71 @@ MethodCallBase::next()
 	_cur = oldcur;
 }
 
-void 
-MethodCallBase::unsupported() 
+void
+MethodCallBase::unsupported()
 {
 	mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as argument of %S::%S",
-             mrb_str_new_cstr(M, type().name()),
-             mrb_str_new_cstr(M, classname()),
-             mrb_str_new_cstr(M, _smoke->methodNames[method().name]));
+             mrb_intern_cstr(M, type().name()),
+             mrb_intern_cstr(M, classname()),
+             mrb_intern_cstr(M, _module_index.smoke->methodNames[method().name]));
 }
 
-const char* 
-MethodCallBase::classname() 
-{ 
-	return _smoke->className(method().classId); 
+const char*
+MethodCallBase::classname()
+{
+	return _module_index.smoke->className(method().classId);
 }
 
 
-VirtualMethodCall::VirtualMethodCall(mrb_state* M, Smoke *smoke, Smoke::Index meth, Smoke::Stack stack, mrb_value obj, mrb_value *sp) :
-    MethodCallBase(M, smoke,meth,stack), _obj(obj)
-{		
+VirtualMethodCall::VirtualMethodCall(mrb_state* M, ModuleIndex const& idx, Smoke::Stack stack, mrb_value obj, mrb_value *sp) :
+    MethodCallBase(M, idx, stack), _obj(obj)
+{
 	_sp = sp;
-	_args = _smoke->argumentList + method().args;
+	_args = idx.smoke->argumentList + method().args;
 }
 
-VirtualMethodCall::~VirtualMethodCall() 
+VirtualMethodCall::~VirtualMethodCall()
 {
 }
 
-Marshall::Action 
-VirtualMethodCall::action() 
-{ 
-	return Marshall::ToVALUE; 
+Marshall::Action
+VirtualMethodCall::action()
+{
+	return Marshall::ToVALUE;
 }
 
 mrb_value *
-VirtualMethodCall::var() 
-{ 
-	return _sp + _cur; 
-}
-	
-int 
-VirtualMethodCall::items() 
-{ 
-	return method().numArgs; 
+VirtualMethodCall::var()
+{
+	return _sp + _cur;
 }
 
-void 
-VirtualMethodCall::callMethod() 
+int
+VirtualMethodCall::items()
+{
+	return method().numArgs;
+}
+
+void
+VirtualMethodCall::callMethod()
 {
 	if (_called) return;
 	_called = true;
 
-	mrb_value _retval = mrb_funcall_argv(M, _obj, mrb_intern_cstr(M, _smoke->methodNames[method().name]), method().numArgs, _sp);
+	mrb_value _retval = mrb_funcall_argv(M, _obj, mrb_intern_cstr(
+      M, _module_index.smoke->methodNames[method().name]), method().numArgs, _sp);
 
-      VirtualMethodReturnValue r(M, _smoke, _method, _stack, _retval);
+  VirtualMethodReturnValue r(M, _module_index, _stack, _retval);
 }
 
-bool 
-VirtualMethodCall::cleanup() 
-{ 
-	return false; 
+bool
+VirtualMethodCall::cleanup()
+{
+	return false;
 }
 
-MethodCall::MethodCall(mrb_state* M, Smoke *smoke, Smoke::Index method, mrb_value target, mrb_value *sp, int items) :
-    MethodCallBase(M,smoke,method), _target(target), _o(0), _sp(sp), _items(items)
+MethodCall::MethodCall(mrb_state* M, ModuleIndex const& idx, mrb_value target, mrb_value *sp, int items) :
+    MethodCallBase(M,idx), _target(target), _o(0), _sp(sp), _items(items)
 {
 	if (not mrb_nil_p(_target)) {
 		smokeruby_object *o = value_obj_info(M, _target);
@@ -516,102 +492,131 @@ MethodCall::MethodCall(mrb_state* M, Smoke *smoke, Smoke::Index method, mrb_valu
 		}
 	}
 
-	_args = _smoke->argumentList + _smoke->methods[_method].args;
-	_items = _smoke->methods[_method].numArgs;
+	_args = idx.smoke->argumentList + idx.smoke->methods[idx.index].args;
+	_items = idx.smoke->methods[idx.index].numArgs;
 	_stack = new Smoke::StackItem[items + 1];
 	_retval = mrb_nil_value();
 }
 
-MethodCall::~MethodCall() 
+MethodCall::~MethodCall()
 {
 	delete[] _stack;
 }
 
-Marshall::Action 
-MethodCall::action() 
-{ 
-	return Marshall::FromVALUE; 
+Marshall::Action
+MethodCall::action()
+{
+	return Marshall::FromVALUE;
 }
 
-mrb_value * 
-MethodCall::var() 
+mrb_value *
+MethodCall::var()
 {
 	if (_cur < 0) return &_retval;
 	return _sp + _cur;
 }
 
-int 
-MethodCall::items() 
-{ 
-	return _items; 
+int
+MethodCall::items()
+{
+	return _items;
 }
 
-bool 
-MethodCall::cleanup() 
-{ 
-	return true; 
+bool
+MethodCall::cleanup()
+{
+	return true;
 }
 
 const char *
-MethodCall::classname() 
-{ 
-	return qstrcmp(MethodCallBase::classname(), "QGlobalSpace") == 0 ? "" : MethodCallBase::classname(); 
+MethodCall::classname()
+{
+	return qstrcmp(MethodCallBase::classname(), "QGlobalSpace") == 0 ? "" : MethodCallBase::classname();
 }
 
-SigSlotBase::SigSlotBase(mrb_state* M, QList<MocArgument*> args) : Marshall(M), _cur(-1), _called(false) 
-{ 
+void MethodCall::callMethod() {
+  if(_called) return;
+  _called = true;
+
+  if (mrb_nil_p(_target) && !(method().flags & Smoke::mf_static)) {
+    mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "%s is not a class method\n", _module_index.smoke->methodNames[method().name]);
+  }
+	
+  Smoke::ClassFn fn = _module_index.smoke->classes[method().classId].classFn;
+  void * ptr = 0;
+
+  if (_o != 0) {
+    const Smoke::Class &cl = _module_index.smoke->classes[method().classId];
+
+    ptr = _o->smoke->cast(	_o->ptr,
+                            _o->classId,
+                            _o->smoke->idClass(cl.className, true).index );
+  }
+
+  _items = -1;
+  (*fn)(method().method, ptr, _stack);
+  if (method().flags & Smoke::mf_ctor) {
+    Smoke::StackItem s[2];
+    s[1].s_voidp = qtruby_modules[_module_index.smoke].binding;
+    (*fn)(0, _stack[0].s_voidp, s);
+  }
+  MethodReturnValue r(M, _module_index, _stack, &_retval);
+}
+
+SigSlotBase::SigSlotBase(mrb_state* M, QList<MocArgument*> args) : Marshall(M), _cur(-1), _called(false)
+{
 	_items = args.count();
 	_args = args;
 	_stack = new Smoke::StackItem[_items - 1];
 }
 
-SigSlotBase::~SigSlotBase() 
-{ 
-	delete[] _stack; 
+SigSlotBase::~SigSlotBase()
+{
+	delete[] _stack;
 	foreach (MocArgument * arg, _args) {
 		delete arg;
 	}
 }
 
 const MocArgument &
-SigSlotBase::arg() 
-{ 
-	return *(_args[_cur + 1]); 
+SigSlotBase::arg()
+{
+	return *(_args[_cur + 1]);
 }
 
-SmokeType 
-SigSlotBase::type() 
-{ 
-	return arg().st; 
+SmokeType
+SigSlotBase::type()
+{
+	return arg().st;
 }
 
 Smoke::StackItem &
-SigSlotBase::item() 
-{ 
-	return _stack[_cur]; 
+SigSlotBase::item()
+{
+	return _stack[_cur];
 }
 
-mrb_value * 
-SigSlotBase::var() 
-{ 
-	return _sp + _cur; 
+mrb_value *
+SigSlotBase::var()
+{
+	return _sp + _cur;
 }
 
 Smoke *
-SigSlotBase::smoke() 
-{ 
-	return type().smoke(); 
-}
-
-void 
-SigSlotBase::unsupported() 
+SigSlotBase::smoke()
 {
-	mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as %S argument\n",
-             mrb_str_new_cstr(M, type().name()), mrb_str_new_cstr(M, mytype()) );
+	return type().smoke();
 }
 
 void
-SigSlotBase::next() 
+SigSlotBase::unsupported()
+{
+	mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as %S argument\n",
+             mrb_intern_cstr(M, type().name()), mrb_intern_cstr(M, mytype()) );
+}
+
+void
+SigSlotBase::next()
 {
 	int oldcur = _cur;
 	_cur++;
@@ -626,7 +631,7 @@ SigSlotBase::next()
 	_cur = oldcur;
 }
 
-void 
+void
 SigSlotBase::prepareReturnValue(void** o)
 {
 	if (_args[0]->argType == xmoc_ptr) {
@@ -668,7 +673,7 @@ SigSlotBase::prepareReturnValue(void** o)
 }
 
 /*
-	Converts a ruby value returned by a slot invocation to a Qt slot 
+	Converts a ruby value returned by a slot invocation to a Qt slot
 	reply type
 */
 class SlotReturnValue : public Marshall {
@@ -684,7 +689,7 @@ public:
 		_stack = new Smoke::StackItem[1];
 		Marshall::HandlerFn fn = getMarshallFn(type());
 		(*fn)(this);
-		
+
 		QByteArray t(type().name());
 		t.replace("const ", "");
 		t.replace("&", "");
@@ -694,7 +699,7 @@ public:
 			*reinterpret_cast<QDBusVariant*>(o[0]) = *(QDBusVariant*) _stack[0].s_class;
 #endif
 		} else {
-			// Save any address in zeroth element of the arrary of 'void*'s passed to 
+			// Save any address in zeroth element of the arrary of 'void*'s passed to
 			// qt_metacall()
 			void * ptr = o[0];
 			smokeStackToQtStack(M, _stack, o, 0, 1, _replyType);
@@ -706,25 +711,25 @@ public:
 		}
     }
 
-    SmokeType type() { 
-		return _replyType[0]->st; 
+    SmokeType type() {
+		return _replyType[0]->st;
 	}
     Marshall::Action action() { return Marshall::FromVALUE; }
     Smoke::StackItem &item() { return _stack[0]; }
     mrb_value * var() {
     	return _result;
     }
-	
-	void unsupported() 
+
+	void unsupported()
 	{
-		mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as slot reply-type", mrb_str_new_cstr(M, type().name()));
+		mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as slot reply-type", mrb_intern_cstr(M, type().name()));
     }
 	Smoke *smoke() { return type().smoke(); }
-    
+
 	void next() {}
-    
+
 	bool cleanup() { return false; }
-	
+
 	~SlotReturnValue() {
 		delete[] _stack;
 	}
@@ -737,37 +742,37 @@ InvokeSlot::InvokeSlot(mrb_state* m, mrb_value obj, mrb_sym slotname, QList<MocA
 	copyArguments();
 }
 
-InvokeSlot::~InvokeSlot() 
-{ 
-	mrb_free(M, _sp);	
+InvokeSlot::~InvokeSlot()
+{
+	mrb_free(M, _sp);
 }
 
-Marshall::Action 
-InvokeSlot::action() 
-{ 
-	return Marshall::ToVALUE; 
+Marshall::Action
+InvokeSlot::action()
+{
+	return Marshall::ToVALUE;
 }
 
 const char *
-InvokeSlot::mytype() 
-{ 
-	return "slot"; 
+InvokeSlot::mytype()
+{
+	return "slot";
 }
 
-bool 
-InvokeSlot::cleanup() 
-{ 
-	return false; 
+bool
+InvokeSlot::cleanup()
+{
+	return false;
 }
 
-void 
-InvokeSlot::copyArguments() 
+void
+InvokeSlot::copyArguments()
 {
 	smokeStackFromQtStack(M, _stack, _o + 1, 1, _items, _args);
 }
 
-void 
-InvokeSlot::invokeSlot() 
+void
+InvokeSlot::invokeSlot()
 {
 	if (_called) return;
 	_called = true;
@@ -779,10 +784,10 @@ InvokeSlot::invokeSlot()
 	}
 }
 
-void 
-InvokeSlot::mainfunction() 
-{ 
-	invokeSlot(); 
+void
+InvokeSlot::mainfunction()
+{
+	invokeSlot();
 }
 
 }

@@ -66,26 +66,11 @@
 
 #include <smoke.h>
 
-#undef DEBUG
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#ifndef __USE_POSIX
-#define __USE_POSIX
-#endif
-#ifndef __USE_XOPEN
-#define __USE_XOPEN
-#endif
-
 #include "marshall.h"
 #include "qtruby.h"
 #include "smokeruby.h"
 #include "marshall_basetypes.h"
 #include "marshall_macros.h"
-
-#ifndef HINT_BYTES
-#define HINT_BYTES HINT_BYTE
-#endif
 
 void
 mark_qobject_children(mrb_state* M, QObject * qobject)
@@ -178,10 +163,11 @@ mark_qstandarditem_children(mrb_state* M, QStandardItem * item)
 }
 
 void
-smokeruby_mark(mrb_state* M, mrb_value obj_)
+smokeruby_mark(mrb_state* M, mrb_value obj)
 {
-	mrb_value obj;
-  smokeruby_object * o = (smokeruby_object *) DATA_PTR(obj_);
+  smokeruby_object * o = (smokeruby_object *) DATA_PTR(obj);
+  assert(DATA_TYPE(obj) == &smokeruby_type);
+  if(not o) { return; }
     const char *className = o->smoke->classes[o->classId].className;
 
 	if (do_debug & qtdb_gc) qWarning("Checking for mark (%s*)%p", className, o->ptr);
@@ -951,8 +937,6 @@ static void marshall_doubleR(Marshall *m) {
 	}
 }
 
-static QTextCodec *codec = 0;
-
 QString*
 qstringFromRString(mrb_state* M, mrb_value rstring) {
   // force UTF-8
@@ -980,12 +964,7 @@ static void marshall_QString(Marshall *m) {
 	switch(m->action()) {
 		case Marshall::FromVALUE:
 		{
-			QString* s = 0;
-			if(not mrb_nil_p( *(m->var()))) {
-				s = qstringFromRString(m->M, *(m->var()));
-			} else {
-				s = new QString();
-			}
+			QString* s = mrb_nil_p( *(m->var()))? new QString() : qstringFromRString(m->M, *(m->var()));
 
 			m->item().s_voidp = s;
 			m->next();
@@ -996,27 +975,15 @@ static void marshall_QString(Marshall *m) {
 				mrb_str_cat_cstr(m->M, *(m->var()), mrb_string_value_ptr(m->M, temp));
 			}
 
-			if (s != 0 && m->cleanup()) {
-				delete s;
-			}
+			if (s != 0 && m->cleanup()) { delete s; }
 		}
 		break;
 
 		case Marshall::ToVALUE:
 		{
 			QString *s = (QString*)m->item().s_voidp;
-			if(s) {
-				if (s->isNull()) {
-					*(m->var()) = mrb_nil_value();
-				} else {
-					*(m->var()) = rstringFromQString(m->M, s);
-				}
-				if(m->cleanup() || m->type().isStack() ) {
-					delete s;
-				}
-			} else {
-				*(m->var()) = mrb_nil_value();
-			}
+      *(m->var()) = !s and s->isNull()? mrb_nil_value() : rstringFromQString(m->M, s);
+      if(s and m->cleanup() || m->type().isStack() ) { delete s; }
 		}
 		break;
 
@@ -1276,7 +1243,7 @@ void marshall_QByteArrayList(Marshall *m) {
 		    stringlist->append(QByteArray());
 		    continue;
 		}
-		stringlist->append(QByteArray(mrb_string_value_ptr(m->M, item), RSTRING_LEN(item)));
+		stringlist->append(QByteArray(RSTRING_PTR(item), RSTRING_LEN(item)));
 	    }
 
 	    m->item().s_voidp = stringlist;
@@ -1386,12 +1353,7 @@ void marshall_QListInt(Marshall *m) {
 	    QList<int> *valuelist = new QList<int>;
 	    long i;
 	    for(i = 0; i < count; i++) {
-		mrb_value item = mrb_ary_entry(list, i);
-		if(mrb_type(item) != MRB_TT_FIXNUM) {
-		    valuelist->append(0);
-		    continue;
-		}
-		valuelist->append(mrb_fixnum(item));
+		valuelist->append(get_mrb_int(m->M, mrb_ary_entry(list, i)));
 	    }
 
 	    m->item().s_voidp = valuelist;
@@ -1458,12 +1420,7 @@ void marshall_QListUInt(Marshall *m) {
 	    QList<uint> *valuelist = new QList<uint>;
 	    long i;
 	    for(i = 0; i < count; i++) {
-		mrb_value item = mrb_ary_entry(list, i);
-		if(mrb_type(item) != MRB_TT_FIXNUM) {
-		    valuelist->append(0);
-		    continue;
-		}
-		valuelist->append(mrb_fixnum(item));
+        valuelist->append(get_mrb_int(m->M, mrb_ary_entry(list, i)));
 	    }
 
 	    m->item().s_voidp = valuelist;
@@ -1672,7 +1629,7 @@ void marshall_QVectorint(Marshall *m) {
 		QVector<int> *valuelist = new QVector<int>;
 		long i;
 		for (i = 0; i < count; i++) {
-			valuelist->append(mrb_fixnum(mrb_ary_entry(list, i)));
+			valuelist->append(get_mrb_int(m->M, mrb_ary_entry(list, i)));
 		}
 
 		m->item().s_voidp = valuelist;
@@ -1760,12 +1717,12 @@ void marshall_QMapQStringQString(Marshall *m) {
 		QMap<QString,QString> * map = new QMap<QString,QString>;
 
 		// Convert the ruby hash to an array of key/value arrays
-		mrb_value temp = mrb_funcall(m->M, hash, "to_a", 0);
+		mrb_value temp = mrb_hash_keys(m->M, hash);
 
 		for (long i = 0; i < RARRAY_LEN(temp); i++) {
-			mrb_value key = mrb_ary_entry(mrb_ary_entry(temp, i), 0);
-			mrb_value value = mrb_ary_entry(mrb_ary_entry(temp, i), 1);
-			(*map)[QString(mrb_string_value_ptr(m->M, key))] = QString(mrb_string_value_ptr(m->M, value));
+			mrb_value key = RARRAY_PTR(temp)[i];
+			(*map)[QString(mrb_string_value_ptr(m->M, key))] =
+          QString(mrb_string_value_ptr(m->M, mrb_hash_get(m->M, hash, key)));
 		}
 
 		m->item().s_voidp = map;
@@ -1816,11 +1773,11 @@ void marshall_QMapQStringQVariant(Marshall *m) {
 		QMap<QString,QVariant> * map = new QMap<QString,QVariant>;
 
 		// Convert the ruby hash to an array of key/value arrays
-		mrb_value temp = mrb_funcall(m->M, hash, "to_a", 0);
+		mrb_value temp = mrb_hash_keys(m->M, hash);
 
 		for (long i = 0; i < RARRAY_LEN(temp); i++) {
-			mrb_value key = mrb_ary_entry(mrb_ary_entry(temp, i), 0);
-			mrb_value value = mrb_ary_entry(mrb_ary_entry(temp, i), 1);
+			mrb_value key = RARRAY_PTR(temp)[i];
+			mrb_value value = mrb_hash_get(m->M, hash, key);
 
 			smokeruby_object *o = value_obj_info(m->M, value);
 			if (!o || !o->ptr || o->classId != o->smoke->findClass("QVariant").index) {
@@ -1895,11 +1852,11 @@ void marshall_QMapIntQVariant(Marshall *m) {
 		QMap<int,QVariant> * map = new QMap<int,QVariant>;
 
 		// Convert the ruby hash to an array of key/value arrays
-		mrb_value temp = mrb_funcall(m->M, hash, "to_a", 0);
+		mrb_value temp = mrb_hash_keys(m->M, hash);
 
 		for (long i = 0; i < RARRAY_LEN(temp); i++) {
-			mrb_value key = mrb_ary_entry(mrb_ary_entry(temp, i), 0);
-			mrb_value value = mrb_ary_entry(mrb_ary_entry(temp, i), 1);
+			mrb_value key = RARRAY_PTR(temp)[i];
+			mrb_value value = mrb_hash_get(m->M, hash, key);
 
 			smokeruby_object *o = value_obj_info(m->M, value);
 			if (!o || !o->ptr || o->classId != o->smoke->idClass("QVariant").index) {
@@ -1912,7 +1869,7 @@ void marshall_QMapIntQVariant(Marshall *m) {
 				o = value_obj_info(m->M, value);
 			}
 
-			(*map)[mrb_fixnum(key)] = (QVariant)*(QVariant*)o->ptr;
+			(*map)[get_mrb_int(m->M, key)] = (QVariant)*(QVariant*)o->ptr;
 		}
 
 		m->item().s_voidp = map;
@@ -1974,26 +1931,22 @@ void marshall_QMapintQVariant(Marshall *m) {
 		QMap<int,QVariant> * map = new QMap<int,QVariant>;
 
 		// Convert the ruby hash to an array of key/value arrays
-		mrb_value temp = mrb_funcall(m->M, hash, "to_a", 0);
+		mrb_value temp = mrb_hash_keys(m->M, hash);
 
 		for (long i = 0; i < RARRAY_LEN(temp); i++) {
-			mrb_value key = mrb_ary_entry(mrb_ary_entry(temp, i), 0);
-			mrb_value value = mrb_ary_entry(mrb_ary_entry(temp, i), 1);
-
-			smokeruby_object *o = value_obj_info(m->M, value);
-			if( !o || !o->ptr)
-                   continue;
+			mrb_value key = RARRAY_PTR(temp)[i];
+			smokeruby_object *o = value_obj_info(m->M, mrb_hash_get(m->M, hash, key));
+			if( !o || !o->ptr) { continue; }
 			void * ptr = o->ptr;
 			ptr = o->smoke->cast(ptr, o->classId, o->smoke->idClass("QVariant").index);
 
-			(*map)[mrb_fixnum(key)] = (QVariant)*(QVariant*)ptr;
+			(*map)[get_mrb_int(m->M, key)] = (QVariant)*(QVariant*)ptr;
 		}
 
 		m->item().s_voidp = map;
 		m->next();
 
-	    if(m->cleanup())
-		delete map;
+    if(m->cleanup()) { delete map; }
 	}
 	break;
       case Marshall::ToVALUE:
@@ -2072,13 +2025,7 @@ void marshall_QRgb_array(Marshall *m) {
 	    QRgb *rgb = new QRgb[count + 2];
 	    long i;
 	    for(i = 0; i < count; i++) {
-		mrb_value item = mrb_ary_entry(list, i);
-		if(mrb_type(item) != MRB_TT_FIXNUM) {
-		    rgb[i] = 0;
-		    continue;
-		}
-
-		rgb[i] = mrb_fixnum(item);
+        rgb[i] = get_mrb_int(m->M, mrb_ary_entry(list, i));
 	    }
 	    m->item().s_voidp = rgb;
 	    m->next();
@@ -2156,26 +2103,20 @@ void marshall_QPairQStringQStringList(Marshall *m) {
 	default:
 		m->unsupported();
 		break;
-    }
+  }
 }
 
 void marshall_QPairqrealQColor(Marshall *m) {
 	switch(m->action()) {
-	case Marshall::FromVALUE:
-	{
+	case Marshall::FromVALUE: {
 		mrb_value list = *(m->var());
 		if (mrb_type(list) != MRB_TT_ARRAY || RARRAY_LEN(list) != 2) {
 			m->item().s_voidp = 0;
 			break;
-	    }
+    }
 
-		qreal real;
 		mrb_value item1 = mrb_ary_entry(list, 0);
-		if (mrb_type(item1) != MRB_TT_FLOAT) {
-		    real = 0;
-		} else {
-			real = mrb_float(item1);
-		}
+		qreal real = mrb_float_p(item1)? mrb_float(item1) : 0;
 
 		mrb_value item2 = mrb_ary_entry(list, 1);
 
@@ -2189,13 +2130,9 @@ void marshall_QPairqrealQColor(Marshall *m) {
 		m->item().s_voidp = qpair;
 		m->next();
 
-		if (m->cleanup()) {
-			delete qpair;
-		}
-	}
-	break;
-	case Marshall::ToVALUE:
-	{
+		if (m->cleanup()) { delete qpair; }
+	} break;
+	case Marshall::ToVALUE: {
 		QPair<qreal,QColor> * qpair = static_cast<QPair<qreal,QColor> * >(m->item().s_voidp);
 		if (qpair == 0) {
 			*(m->var()) = mrb_nil_value();
@@ -2207,23 +2144,18 @@ void marshall_QPairqrealQColor(Marshall *m) {
 		void *p = (void *) &(qpair->second);
 		mrb_value rv2 = getPointerObject(m->M, p);
 		if (mrb_nil_p(rv2)) {
-			smokeruby_object  * o = alloc_smokeruby_object(	m->M, false,
-															m->smoke(),
-															m->smoke()->idClass("QColor").index,
-															p );
+			smokeruby_object  * o = alloc_smokeruby_object(
+          m->M, false, m->smoke(), m->smoke()->idClass("QColor").index, p );
 			rv2 = set_obj_info(m->M, "Qt::Color", o);
 		}
 
-		mrb_value av = mrb_ary_new(m->M);
+		mrb_value av = mrb_ary_new_capa(m->M, 2);
 		mrb_ary_push(m->M, av, rv1);
 		mrb_ary_push(m->M, av, rv2);
 		*(m->var()) = av;
 
-		if (m->cleanup()) {
-//			delete qpair;
-		}
-	}
-		break;
+		if (m->cleanup()) { /* delete qpair; */ }
+	} break;
 	default:
 		m->unsupported();
 		break;
@@ -2232,44 +2164,29 @@ void marshall_QPairqrealQColor(Marshall *m) {
 
 void marshall_QPairintint(Marshall *m) {
 	switch(m->action()) {
-	case Marshall::FromVALUE:
-	{
-		mrb_value list = *(m->var());
-		if (mrb_type(list) != MRB_TT_ARRAY || RARRAY_LEN(list) != 2) {
-			m->item().s_voidp = 0;
-			break;
-	    }
-		int int0;
-		int int1;
-		mrb_value item = mrb_ary_entry(list, 0);
-		if (mrb_type(item) != MRB_TT_FIXNUM) {
-		    int0 = 0;
-		} else {
-			int0 = mrb_fixnum(item);
-		}
+    case Marshall::FromVALUE: {
+      mrb_value list = *(m->var());
+      if (mrb_type(list) != MRB_TT_ARRAY || RARRAY_LEN(list) != 2) {
+        m->item().s_voidp = 0;
+        break;
+      }
+      int int0;
+      int int1;
+      int0 = get_mrb_int(m->M, mrb_ary_entry(list, 0));
+      int1 = get_mrb_int(m->M, mrb_ary_entry(list, 1));
 
-		item = mrb_ary_entry(list, 1);
+      QPair<int,int> * qpair = new QPair<int,int>(int0,int1);
+      m->item().s_voidp = qpair;
+      m->next();
 
-		if (mrb_type(item) != MRB_TT_FIXNUM) {
-		    int1 = 0;
-		} else {
-			int1 = mrb_fixnum(item);
-		}
+      if (m->cleanup()) { delete qpair; }
+    } break;
 
-		QPair<int,int> * qpair = new QPair<int,int>(int0,int1);
-		m->item().s_voidp = qpair;
-		m->next();
-
-		if (m->cleanup()) {
-			delete qpair;
-		}
-	}
-	break;
-      case Marshall::ToVALUE:
-      default:
-	m->unsupported();
-	break;
-    }
+    case Marshall::ToVALUE:
+    default:
+      m->unsupported();
+      break;
+  }
 }
 
 DEF_LIST_MARSHALLER( QAbstractButtonList, QList<QAbstractButton*>, QAbstractButton )
@@ -2541,10 +2458,8 @@ void install_handlers(TypeHandler *h) {
 }
 
 Marshall::HandlerFn getMarshallFn(const SmokeType &type) {
-	if (type.elem())
-		return marshall_basetype;
-	if (!type.name())
-		return marshall_void;
+	if (type.elem()) { return marshall_basetype; }
+	if (!type.name()) { return marshall_void; }
 
 	TypeHandler *h = type_handlers[type.name()];
 
@@ -2552,15 +2467,11 @@ Marshall::HandlerFn getMarshallFn(const SmokeType &type) {
 		h = type_handlers[type.name() + strlen("const ")];
 	}
 
-        char last_char = type.name()[strlen(type.name()) - 1];
-        if (h == 0 && strncmp(type.name(), "QFlags", 6) == 0 && last_char == '&')
-        {
-          h = type_handlers["QFlags&"];
-        }
-
-	if (h != 0) {
-		return h->fn;
-	}
+  char last_char = type.name()[strlen(type.name()) - 1];
+  if (h == 0 && strncmp(type.name(), "QFlags", 6) == 0 && last_char == '&') {
+    h = type_handlers["QFlags&"];
+  }
+	if (h) { return h->fn; }
 
 	return marshall_unknown;
 }
