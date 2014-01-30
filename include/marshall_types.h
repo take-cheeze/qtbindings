@@ -31,8 +31,8 @@
 
 Marshall::HandlerFn getMarshallFn(const SmokeType &type);
 
-extern void smokeStackToQtStack(mrb_state* M, Smoke::Stack stack, void ** o, int start, int end, QList<MocArgument*> args);
-extern void smokeStackFromQtStack(mrb_state* M, Smoke::Stack stack, void ** _o, int start, int end, QList<MocArgument*> args);
+extern void smokeStackToQtStack(mrb_state* M, Smoke::Stack stack, void ** o, int start, int end, QList<MocArgument> const& args);
+extern void smokeStackFromQtStack(mrb_state* M, Smoke::Stack stack, void ** _o, int start, int end, QList<MocArgument> const& args);
 
 namespace QtRuby {
 
@@ -141,7 +141,7 @@ private:
 
 class Q_DECL_EXPORT SigSlotBase : public Marshall {
 public:
-	SigSlotBase(mrb_state* M, QList<MocArgument*> args);
+	SigSlotBase(mrb_state* M, QList<MocArgument> const& args);
 	~SigSlotBase();
 	const MocArgument &arg();
 	SmokeType type();
@@ -155,11 +155,10 @@ public:
 	void prepareReturnValue(void** o);
 
 protected:
-	QList<MocArgument*> _args;
+	QList<MocArgument> const& _args;
 	int _cur;
 	bool _called;
 	Smoke::Stack _stack;
-	int _items;
 	mrb_value *_sp;
 };
 
@@ -169,7 +168,7 @@ class Q_DECL_EXPORT EmitSignal : public SigSlotBase {
     int _id;
 	mrb_value * _result;
  public:
-    EmitSignal(mrb_state* M, QObject *obj, int id, int items, QList<MocArgument*> args, mrb_value * sp, mrb_value * result);
+    EmitSignal(mrb_state* M, QObject *obj, int id, int items, QList<MocArgument> const& args, mrb_value * sp, mrb_value * result);
     Marshall::Action action();
     Smoke::StackItem &item();
 	const char *mytype();
@@ -184,7 +183,7 @@ class Q_DECL_EXPORT InvokeNativeSlot : public SigSlotBase {
     int _id;
 	mrb_value * _result;
  public:
-  InvokeNativeSlot(mrb_state* M, QObject *obj, int id, int items, QList<MocArgument*> args, mrb_value * sp, mrb_value * result);
+  InvokeNativeSlot(mrb_state* M, QObject *obj, int id, int items, QList<MocArgument> const& args, mrb_value * sp, mrb_value * result);
     Marshall::Action action();
     Smoke::StackItem &item();
 	const char *mytype();
@@ -198,7 +197,7 @@ class Q_DECL_EXPORT InvokeSlot : public SigSlotBase {
     mrb_sym _slotname;
     void **_o;
 public:
-    InvokeSlot(mrb_state* M, mrb_value obj, mrb_sym slotname, QList<MocArgument*> args, void ** o);
+    InvokeSlot(mrb_state* M, mrb_value obj, mrb_sym slotname, QList<MocArgument> const& args, void ** o);
 	~InvokeSlot();
     Marshall::Action action();
 	const char *mytype();

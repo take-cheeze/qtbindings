@@ -28,6 +28,8 @@
 #include <mruby/array.h>
 #include <mruby/string.h>
 
+#include <typeinfo>
+
 #ifdef QT_QTDBUS
 #include <QtDBus/QtDBus>
 #endif
@@ -77,11 +79,11 @@ show_exception_message(mrb_state* M)
 */
 
 void
-smokeStackToQtStack(mrb_state* M, Smoke::Stack stack, void ** o, int start, int end, QList<MocArgument*> args)
+smokeStackToQtStack(mrb_state* M, Smoke::Stack stack, void ** o, int start, int end, QList<MocArgument> const& args)
 {
 	for (int i = start, j = 0; i < end; i++, j++) {
 		Smoke::StackItem *si = stack + j;
-		switch(args[i]->argType) {
+		switch(args[i].argType) {
 		case xmoc_bool:
 			o[j] = &si->s_bool;
 			break;
@@ -108,7 +110,7 @@ smokeStackToQtStack(mrb_state* M, Smoke::Stack stack, void ** o, int start, int 
 			break;
 		default:
 		{
-			const SmokeType &t = args[i]->st;
+			const SmokeType &t = args[i].st;
 			void *p;
 			switch(t.elem()) {
 			case Smoke::t_bool:
@@ -178,11 +180,11 @@ smokeStackToQtStack(mrb_state* M, Smoke::Stack stack, void ** o, int start, int 
 }
 
 void
-smokeStackFromQtStack(mrb_state* M, Smoke::Stack stack, void ** _o, int start, int end, QList<MocArgument*> args)
+smokeStackFromQtStack(mrb_state* M, Smoke::Stack stack, void ** _o, int start, int end, QList<MocArgument> const& args)
 {
 	for (int i = start, j = 0; i < end; i++, j++) {
 		void *o = _o[j];
-		switch(args[i]->argType) {
+		switch(args[i].argType) {
 		case xmoc_bool:
 			stack[j].s_bool = *(bool*)o;
 			break;
@@ -209,7 +211,7 @@ smokeStackFromQtStack(mrb_state* M, Smoke::Stack stack, void ** _o, int start, i
 			break;
 		default:	// case xmoc_ptr:
 		{
-			const SmokeType &t = args[i]->st;
+			const SmokeType &t = args[i].st;
 			switch(t.elem()) {
 			case Smoke::t_bool:
 			stack[j].s_bool = *(bool*)o;
@@ -563,25 +565,20 @@ void MethodCall::callMethod() {
   MethodReturnValue r(M, _module_index, _stack, &_retval);
 }
 
-SigSlotBase::SigSlotBase(mrb_state* M, QList<MocArgument*> args) : Marshall(M), _cur(-1), _called(false)
+SigSlotBase::SigSlotBase(mrb_state* M, QList<MocArgument> const& args) : Marshall(M), _args(args), _cur(-1), _called(false)
 {
-	_items = args.count();
-	_args = args;
-	_stack = new Smoke::StackItem[_items - 1];
+	_stack = new Smoke::StackItem[args.count() - 1];
 }
 
 SigSlotBase::~SigSlotBase()
 {
 	delete[] _stack;
-	foreach (MocArgument * arg, _args) {
-		delete arg;
-	}
 }
 
 const MocArgument &
 SigSlotBase::arg()
 {
-	return *(_args[_cur + 1]);
+	return _args[_cur + 1];
 }
 
 SmokeType
@@ -621,7 +618,7 @@ SigSlotBase::next()
 	int oldcur = _cur;
 	_cur++;
 
-	while(!_called && _cur < _items - 1) {
+	while(!_called && _cur < _args.size() - 1) {
 		Marshall::HandlerFn fn = getMarshallFn(type());
 		(*fn)(this);
 		_cur++;
@@ -634,8 +631,8 @@ SigSlotBase::next()
 void
 SigSlotBase::prepareReturnValue(void** o)
 {
-	if (_args[0]->argType == xmoc_ptr) {
-		QByteArray type(_args[0]->st.name());
+	if (_args[0].argType == xmoc_ptr) {
+		QByteArray type(_args[0].st.name());
 		type.replace("const ", "");
 		if (!type.endsWith('*')) {  // a real pointer type, so a simple void* will do
 			if (type.endsWith('&')) {
@@ -667,7 +664,7 @@ SigSlotBase::prepareReturnValue(void** o)
 				}
 			}
 		}
-	} else if (_args[0]->argType == xmoc_QString) {
+	} else if (_args[0].argType == xmoc_QString) {
 		o[0] = new QString;
 	}
 }
@@ -677,15 +674,14 @@ SigSlotBase::prepareReturnValue(void** o)
 	reply type
 */
 class SlotReturnValue : public Marshall {
-    QList<MocArgument*>	_replyType;
+    QList<MocArgument> const&	_replyType;
     Smoke::Stack _stack;
 	mrb_value * _result;
 public:
-	SlotReturnValue(mrb_state* M, void ** o, mrb_value * result, QList<MocArgument*> replyType)
-      : Marshall(M)
+	SlotReturnValue(mrb_state* M, void ** o, mrb_value * result, QList<MocArgument> const& replyType)
+      : Marshall(M), _replyType(replyType)
 	{
 		_result = result;
-		_replyType = replyType;
 		_stack = new Smoke::StackItem[1];
 		Marshall::HandlerFn fn = getMarshallFn(type());
 		(*fn)(this);
@@ -712,7 +708,7 @@ public:
     }
 
     SmokeType type() {
-		return _replyType[0]->st;
+		return _replyType[0].st;
 	}
     Marshall::Action action() { return Marshall::FromVALUE; }
     Smoke::StackItem &item() { return _stack[0]; }
@@ -735,10 +731,10 @@ public:
 	}
 };
 
-InvokeSlot::InvokeSlot(mrb_state* m, mrb_value obj, mrb_sym slotname, QList<MocArgument*> args, void ** o) : SigSlotBase(m, args),
+InvokeSlot::InvokeSlot(mrb_state* m, mrb_value obj, mrb_sym slotname, QList<MocArgument> const& args, void ** o) : SigSlotBase(m, args),
     _obj(obj), _slotname(slotname), _o(o)
 {
-	_sp = (mrb_value*)mrb_malloc(M, sizeof(mrb_value) * (_items - 1));
+	_sp = (mrb_value*)mrb_malloc(M, sizeof(mrb_value) * (args.size() - 1));
 	copyArguments();
 }
 
@@ -768,7 +764,7 @@ InvokeSlot::cleanup()
 void
 InvokeSlot::copyArguments()
 {
-	smokeStackFromQtStack(M, _stack, _o + 1, 1, _items, _args);
+	smokeStackFromQtStack(M, _stack, _o + 1, 1, _args.size(), _args);
 }
 
 void
@@ -777,9 +773,9 @@ InvokeSlot::invokeSlot()
 	if (_called) return;
 	_called = true;
 
-  mrb_value result = mrb_funcall_argv(M, _obj, _slotname, _items - 1, _sp);
+  mrb_value result = mrb_funcall_argv(M, _obj, _slotname, _args.size() - 1, _sp);
 
-	if (_args[0]->argType != xmoc_void) {
+	if (_args[0].argType != xmoc_void) {
 		SlotReturnValue r(M, _o, &result, _args);
 	}
 }

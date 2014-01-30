@@ -165,8 +165,9 @@ mark_qstandarditem_children(mrb_state* M, QStandardItem * item)
 void
 smokeruby_mark(mrb_state* M, mrb_value obj)
 {
-  smokeruby_object * o = (smokeruby_object *) DATA_PTR(obj);
+  if(not DATA_TYPE(obj)) { return; }
   assert(DATA_TYPE(obj) == &smokeruby_type);
+  smokeruby_object * o = (smokeruby_object *) DATA_PTR(obj);
   if(not o) { return; }
     const char *className = o->smoke->classes[o->classId].className;
 
@@ -946,7 +947,8 @@ qstringFromRString(mrb_state* M, mrb_value rstring) {
 
 mrb_value
 rstringFromQString(mrb_state* M, QString * s) {
-	return mrb_str_new_cstr(M, s->toUtf8());
+  QByteArray const str = s->toUtf8();
+	return mrb_str_new(M, str.constData(), str.size());
 }
 
 QByteArray*
@@ -980,10 +982,10 @@ static void marshall_QString(Marshall *m) {
 		break;
 
 		case Marshall::ToVALUE:
-		{
+    {
 			QString *s = (QString*)m->item().s_voidp;
-      *(m->var()) = !s and s->isNull()? mrb_nil_value() : rstringFromQString(m->M, s);
-      if(s and m->cleanup() || m->type().isStack() ) { delete s; }
+      *(m->var()) = (s or not s->isNull())? rstringFromQString(m->M, s) : mrb_nil_value();
+      if(s and (m->cleanup() or m->type().isStack())) { delete s; }
 		}
 		break;
 

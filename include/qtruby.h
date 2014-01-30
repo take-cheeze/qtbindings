@@ -164,7 +164,7 @@ extern Q_DECL_EXPORT mrb_value findMethod(mrb_state* M, mrb_value self);
 extern Q_DECL_EXPORT Smoke::ModuleIndex find_cached_selector(mrb_state* M, int argc, mrb_value * argv, RClass* klass, const char * methodName, QByteArray& mcid);
 extern Q_DECL_EXPORT mrb_value method_missing(mrb_state* M, mrb_value self);
 extern Q_DECL_EXPORT mrb_value class_method_missing(mrb_state* M, mrb_value klass);
-extern Q_DECL_EXPORT QList<MocArgument*> get_moc_arguments(mrb_state* M, Smoke* smoke, const char * typeName, QList<QByteArray> methodTypes);
+extern Q_DECL_EXPORT void get_moc_arguments(mrb_state* M, Smoke* smoke, const char * typeName, QList<QByteArray>& methodTypes, QList<MocArgument>& result);
 
 extern Q_DECL_EXPORT void * construct_copy(smokeruby_object *o);
 

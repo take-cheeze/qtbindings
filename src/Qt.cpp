@@ -327,15 +327,14 @@ Binding::className(Smoke::Index classId) {
 	reply type
 */
 class SignalReturnValue : public Marshall {
-    QList<MocArgument*>	_replyType;
+    QList<MocArgument> const&	_replyType;
     Smoke::Stack _stack;
 	mrb_value * _result;
 public:
-	SignalReturnValue(mrb_state* M, void ** o, mrb_value * result, QList<MocArgument*> replyType)
-      : Marshall(M)
+	SignalReturnValue(mrb_state* M, void ** o, mrb_value * result, QList<MocArgument> const& replyType)
+      : Marshall(M), _replyType(replyType)
 	{
 		_result = result;
-		_replyType = replyType;
 		_stack = new Smoke::StackItem[1];
 		smokeStackFromQtStack(M, _stack, o, 0, 1, _replyType);
 		Marshall::HandlerFn fn = getMarshallFn(type());
@@ -343,7 +342,7 @@ public:
     }
 
     SmokeType type() {
-		return _replyType[0]->st;
+		return _replyType[0].st;
 	}
     Marshall::Action action() { return Marshall::ToVALUE; }
     Smoke::StackItem &item() { return _stack[0]; }
@@ -370,7 +369,7 @@ public:
 	marshall_types.cpp. However, for unknown reasons they don't link with certain
 	versions of gcc. So they were moved here in to work round that bug.
 */
-EmitSignal::EmitSignal(mrb_state* M, QObject *obj, int id, int /*items*/, QList<MocArgument*> args, mrb_value *sp, mrb_value * result) : SigSlotBase(M, args),
+EmitSignal::EmitSignal(mrb_state* M, QObject *obj, int id, int /*items*/, QList<MocArgument> const& args, mrb_value *sp, mrb_value * result) : SigSlotBase(M, args),
     _obj(obj), _id(id)
 {
 	_sp = sp;
@@ -400,15 +399,15 @@ EmitSignal::emitSignal()
 {
 	if (_called) return;
 	_called = true;
-	void ** o = new void*[_items];
-	smokeStackToQtStack(M, _stack, o + 1, 1, _items, _args);
+	void ** o = new void*[_args.size()];
+	smokeStackToQtStack(M, _stack, o + 1, 1, _args.size(), _args);
 	void * ptr;
 	o[0] = &ptr;
 	prepareReturnValue(o);
 
 	_obj->metaObject()->activate(_obj, _id, o);
 
-	if (_args[0]->argType != xmoc_void) {
+	if (_args[0].argType != xmoc_void) {
 		SignalReturnValue r(M, o, _result, _args);
 	}
 	delete[] o;
@@ -426,7 +425,7 @@ EmitSignal::cleanup()
 	return true;
 }
 
-InvokeNativeSlot::InvokeNativeSlot(mrb_state* M, QObject *obj, int id, int /*items*/, QList<MocArgument*> args, mrb_value *sp, mrb_value * result) : SigSlotBase(M, args),
+InvokeNativeSlot::InvokeNativeSlot(mrb_state* M, QObject *obj, int id, int /*items*/, QList<MocArgument> const& args, mrb_value *sp, mrb_value * result) : SigSlotBase(M, args),
     _obj(obj), _id(id)
 {
 	_sp = sp;
@@ -456,15 +455,15 @@ InvokeNativeSlot::invokeSlot()
 {
 	if (_called) return;
 	_called = true;
-	void ** o = new void*[_items];
-	smokeStackToQtStack(M, _stack, o + 1, 1, _items, _args);
+	void ** o = new void*[_args.size()];
+	smokeStackToQtStack(M, _stack, o + 1, 1, _args.size(), _args);
 	void * ptr;
 	o[0] = &ptr;
 	prepareReturnValue(o);
 
 	_obj->qt_metacall(QMetaObject::InvokeMetaMethod, _id, o);
 
-	if (_args[0]->argType != xmoc_void) {
+	if (_args[0].argType != xmoc_void) {
 		SignalReturnValue r(M, o, _result, _args);
 	}
 	delete[] o;
@@ -865,12 +864,12 @@ method_missing(mrb_state* M, mrb_value self)
     return c.next(), *(c.var());
   }
 
-#define return_if_found(meth)                                           \
-  do { if(meth != Smoke::NullModuleIndex) {                             \
-      methcache[mcid] = meth; /* Success. Cache result. */              \
-      QtRuby::MethodCall c(M, meth, self, argv, argc);                  \
-      return c.next(), *(c.var());                                      \
-    } } while(false)                                                    \
+#define return_if_found(meth)                               \
+  do { if(meth != Smoke::NullModuleIndex) {                 \
+      methcache[mcid] = meth; /* Success. Cache result. */  \
+      QtRuby::MethodCall c(M, meth, self, argv, argc);      \
+      return c.next(), *c.var();                            \
+    } } while(false)                                        \
 
   _current_method = do_method_missing(M, "Qt", methodName, mrb_class(M, self), argc, argv);
   return_if_found(_current_method);
@@ -936,8 +935,10 @@ method_missing(mrb_state* M, mrb_value self)
       // Don't check that the types of the ruby args match the c++ ones for now,
       // only that the name and arg count is the same.
       if (name == methodName && meta->method(id).parameterTypes().count() == (argc - 1)) {
-        QList<MocArgument*> args = get_moc_arguments(M,	o->smoke, meta->method(id).typeName(),
-                                                     meta->method(id).parameterTypes() );
+        QList<MocArgument> args;
+        QList<QByteArray> paramTypes = meta->method(id).parameterTypes();
+        get_moc_arguments(M,	o->smoke, meta->method(id).typeName(),
+                          paramTypes, args);
         mrb_value result = mrb_nil_value();
         return QtRuby::InvokeNativeSlot(M, qobject, id, argc, args, argv, &result).next(), result;
       }
@@ -979,25 +980,24 @@ class_method_missing(mrb_state* M, mrb_value self)
   return c.next(), *(c.var());
 }
 
-QList<MocArgument*>
-get_moc_arguments(mrb_state* M, Smoke* smoke, const char * typeName, QList<QByteArray> methodTypes)
+void
+get_moc_arguments(mrb_state* M, Smoke* smoke, const char * typeName, QList<QByteArray>& methodTypes, QList<MocArgument>& result)
 {
   static QRegExp const rx("^(bool|int|uint|long|ulong|double|char\\*|QString)&?$");
 	methodTypes.prepend(QByteArray(typeName));
-	QList<MocArgument*> result;
+  MocArgument arg;
 
-	foreach (QByteArray name, methodTypes) {
-		MocArgument *arg = new MocArgument;
+	for (auto name : methodTypes) {
 		Smoke::Index typeId = 0;
 
 		if (name.isEmpty()) {
-			arg->argType = xmoc_void;
+			arg.argType = xmoc_void;
 			result.append(arg);
 		} else {
 			name.replace("const ", "");
 			QString staticType = (rx.indexIn(name) != -1 ? rx.cap(1) : "ptr");
 			if (staticType == "ptr") {
-				arg->argType = xmoc_ptr;
+				arg.argType = xmoc_ptr;
 				QByteArray targetType = name;
 				typeId = smoke->idType(targetType.constData());
 				if (typeId == 0 && !name.contains('*')) {
@@ -1034,51 +1034,49 @@ get_moc_arguments(mrb_state* M, Smoke* smoke, const char * typeName, QList<QByte
 					}
 				}
 			} else if (staticType == "bool") {
-				arg->argType = xmoc_bool;
+				arg.argType = xmoc_bool;
 				smoke = qtcore_Smoke;
 				typeId = smoke->idType(name.constData());
 			} else if (staticType == "int") {
-				arg->argType = xmoc_int;
+				arg.argType = xmoc_int;
 				smoke = qtcore_Smoke;
 				typeId = smoke->idType(name.constData());
 			} else if (staticType == "uint") {
-				arg->argType = xmoc_uint;
+				arg.argType = xmoc_uint;
 				smoke = qtcore_Smoke;
 				typeId = smoke->idType("unsigned int");
 			} else if (staticType == "long") {
-				arg->argType = xmoc_long;
+				arg.argType = xmoc_long;
 				smoke = qtcore_Smoke;
 				typeId = smoke->idType(name.constData());
 			} else if (staticType == "ulong") {
-				arg->argType = xmoc_ulong;
+				arg.argType = xmoc_ulong;
 				smoke = qtcore_Smoke;
 				typeId = smoke->idType("unsigned long");
 			} else if (staticType == "double") {
-				arg->argType = xmoc_double;
+				arg.argType = xmoc_double;
 				smoke = qtcore_Smoke;
 				typeId = smoke->idType(name.constData());
 			} else if (staticType == "char*") {
-				arg->argType = xmoc_charstar;
+				arg.argType = xmoc_charstar;
 				smoke = qtcore_Smoke;
 				typeId = smoke->idType(name.constData());
 			} else if (staticType == "QString") {
-				arg->argType = xmoc_QString;
+				arg.argType = xmoc_QString;
 				name += "*";
 				smoke = qtcore_Smoke;
 				typeId = smoke->idType(name.constData());
 			}
 
 			if (typeId == 0) {
-				mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as slot argument\n", mrb_intern_cstr(M, name.constData()));
-				return result;
+				mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as slot argument\n",
+                   mrb_intern(M, name.constData(), name.size()));
 			}
 
-			arg->st.set(smoke, typeId);
+			arg.st.set(smoke, typeId);
 			result.append(arg);
 		}
 	}
-
-	return result;
 }
 
 // ----------------   Helpers -------------------

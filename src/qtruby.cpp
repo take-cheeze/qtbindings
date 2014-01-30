@@ -1088,7 +1088,12 @@ RClass* get_class(mrb_state* M, mrb_value const& self) {
       ? mrb_class_ptr(self) : mrb_class(M, self);
 }
 
+static mrb_value qt_metacall(mrb_state* M, mrb_value self);
+static mrb_value metaObject(mrb_state* M, mrb_value self);
+static mrb_value staticMetaObject(mrb_state* M, mrb_value self);
+
 struct MetaInfo {
+  std::vector<std::string> id2method_table;
   std::unordered_map<std::string, unsigned> methods;
   std::unordered_map<std::string, std::string> method_tags;
   std::vector<std::pair<std::string, std::string>> classinfos;
@@ -1096,6 +1101,7 @@ struct MetaInfo {
   bool dirty = true, dbus = false;
 
   QMetaObject meta_object;
+  mrb_value script_value = mrb_nil_value();
 
   std::string stringdata;
   std::vector<uint> data;
@@ -1171,7 +1177,11 @@ struct MetaInfo {
   }
 
   void update(mrb_state* M, mrb_value const& self) {
-    if(not dirty) { return; }
+    if(not dirty) {
+      // script_value must be set if not dirty
+      assert(not mrb_nil_p(script_value));
+      return;
+    }
 
     RClass* const cls = get_class(M, self);
     RClass* const parent = cls->super;
@@ -1211,7 +1221,8 @@ struct MetaInfo {
     }
 
     // method
-    for(auto const& i : methods) {
+    for(auto id = id2method_table.begin(); id < id2method_table.end(); ++id) {
+      auto const& i = *methods.find(*id);
       d.push_back(stringdata_offset(table, str, i.first.c_str())); // signature
       d.push_back(empty_str); // parameters (if empty string is passed paramter types is used instead)
       d.push_back(empty_str); // return type (empty string means void or not defined)
@@ -1237,7 +1248,45 @@ struct MetaInfo {
 
     dirty = false;
 
+    if(mrb_nil_p(script_value)) {
+      script_value = mrb_obj_value(Data_Wrap_Struct(
+          M, qmetaobject_class(M), &smokeruby_type,
+          alloc_smokeruby_object(
+              M, false, qtcore_Smoke, qtcore_Smoke->idClass("QMetaObject").index,
+              &meta_object)));
+      mrb_mod_cv_set(M, cls, mrb_intern_lit(M, "__STATIC_META_OBJECT"), script_value);
+    }
+    assert(not mrb_nil_p(script_value));
+
     if(do_debug & qtdb_gc) { print_debug_message(); }
+  }
+
+  void define_method(mrb_state* M, char const* name, unsigned flags, unsigned& added) {
+    if(name[0] == '1' or name[0] == '2') { ++name; }
+    if(methods.find(name) != methods.end()) {
+      if(methods[name] != flags) {
+        mrb_raisef(M, mrb_class_get(M, "RuntimeError"), "%S already defined", mrb_str_new_cstr(M, name));
+      }
+    } else { ++added; }
+    methods[name] = flags;
+    id2method_table.push_back(name);
+  }
+
+  static MetaInfo& get(mrb_state* M, RClass* cls, bool mark_dirty = true) {
+    static std::unordered_map<RClass*, MetaInfo> meta_info_table_;
+
+    if(meta_info_table_.find(cls) == meta_info_table_.end()) {
+      assert(mark_dirty);
+      mrb_define_method(M, cls, "qt_metacall", qt_metacall, MRB_ARGS_ANY());
+      mrb_define_method(M, cls, "metaObject", metaObject, MRB_ARGS_NONE());
+      mrb_define_module_function(M, cls, "staticMetaObject", staticMetaObject, MRB_ARGS_NONE());
+      auto& ret = meta_info_table_[cls];
+      ret.dirty = true;
+      return ret;
+    }
+    auto& ret = meta_info_table_[cls];
+    if(mark_dirty) { ret.dirty = true; } // mark dirty
+    return ret;
   }
 };
 
@@ -1247,7 +1296,7 @@ qt_metacall(mrb_state* M, mrb_value self)
 	// Arguments: QMetaObject::Call _c, int id, void ** _o
   mrb_int calltype, id; mrb_value args;
   mrb_get_args(M, "iio", &calltype, &id, &args);
-	QMetaObject::Call _c = (QMetaObject::Call) calltype;
+	QMetaObject::Call const _c = (QMetaObject::Call) calltype;
 	// Note that for a slot with no args and no return type,
 	// it isn't an error to get a NULL value of _o here.
   assert(mrb_voidp_p(args));
@@ -1261,12 +1310,12 @@ qt_metacall(mrb_state* M, mrb_value self)
 
 	const Smoke::Method &m = meth.smoke->methods[meth.smoke->methodMaps[meth.index].method];
   Smoke::ClassFn fn = meth.smoke->classes[m.classId].classFn;
-  Smoke::StackItem i[4];
+  std::array<Smoke::StackItem, 4> i;
   i[1].s_enum = _c;
   i[2].s_int = id;
   i[3].s_voidp = _o;
-  (*fn)(m.method, o->ptr, i);
-  int ret = i[0].s_int;
+  (*fn)(m.method, o->ptr, i.data());
+  int const ret = i[0].s_int;
   if (ret < 0) { return mrb_fixnum_value(ret); }
   if (_c != QMetaObject::InvokeMetaMethod) { return mrb_fixnum_value(id); }
 
@@ -1286,59 +1335,32 @@ qt_metacall(mrb_state* M, mrb_value self)
 			return mrb_fixnum_value(id - count);
 		}
 
-		QList<MocArgument*> mocArgs =
-        get_moc_arguments(M, o->smoke, method.typeName(), method.parameterTypes());
+		QList<MocArgument> mocArgs;
+    QList<QByteArray> paramTypes = method.parameterTypes();
+    get_moc_arguments(M, o->smoke, method.typeName(), paramTypes, mocArgs);
 
-		QString name(method.signature());
-    static QRegExp rx("\\(.*");
-		name.replace(rx, "");
-		QtRuby::InvokeSlot slot(M, self, mrb_intern_cstr(M, name.toLatin1()), mocArgs, _o);
-		slot.next();
+    static std::regex rx("\\(.*");
+    std::string const name = std::regex_replace(method.signature(), rx, "");
+		QtRuby::InvokeSlot(M, self, mrb_intern(M, name.data(), name.size()), mocArgs, _o).next();
 	}
 
 	return mrb_fixnum_value(id - count);
 }
 
-static mrb_value metaObject(mrb_state* M, mrb_value self);
-static mrb_value staticMetaObject(mrb_state* M, mrb_value self);
-
-MetaInfo& get_meta_info(mrb_state* M, RClass* cls, bool mark_dirty = true) {
-  static std::unordered_map<RClass*, MetaInfo> meta_info_table_;
-
-  if(meta_info_table_.find(cls) == meta_info_table_.end()) {
-    assert(mark_dirty);
-    mrb_define_method(M, cls, "qt_metacall", qt_metacall, MRB_ARGS_ANY());
-    mrb_define_method(M, cls, "metaObject", metaObject, MRB_ARGS_NONE());
-    mrb_define_module_function(M, cls, "staticMetaObject", staticMetaObject, MRB_ARGS_NONE());
-    auto& ret = meta_info_table_[cls];
-    ret.dirty = true;
-    return ret;
-  }
-  auto& ret = meta_info_table_[cls];
-  if(mark_dirty) { ret.dirty = true; } // mark dirty
-  return ret;
-}
-
 static mrb_value
 metaObject(mrb_state* M, mrb_value self)
 {
-  MetaInfo& info = get_meta_info(M, mrb_class(M, self), false); // don't change update dirty state
+  MetaInfo& info = MetaInfo::get(M, mrb_class(M, self), false); // don't change update dirty state
   info.update(M, self);
-	smokeruby_object  * m = alloc_smokeruby_object(
-      M, false, qtcore_Smoke, qtcore_Smoke->idClass("QMetaObject").index,
-      &info.meta_object);
-  return mrb_obj_value(Data_Wrap_Struct(M, qmetaobject_class(M), &smokeruby_type, m));
+  return info.script_value;
 }
 
 static mrb_value
 staticMetaObject(mrb_state* M, mrb_value self)
 {
-  MetaInfo& info = get_meta_info(M, get_class(M, self), false); // don't change update dirty state
+  MetaInfo& info = MetaInfo::get(M, get_class(M, self), false); // don't change update dirty state
   info.update(M, self);
-	smokeruby_object  * m = alloc_smokeruby_object(
-      M, false, qtcore_Smoke, qtcore_Smoke->idClass("QMetaObject").index,
-      &info.meta_object);
-  return mrb_obj_value(Data_Wrap_Struct(M, qmetaobject_class(M), &smokeruby_type, m));
+  return info.script_value;
 }
 
 static mrb_value
@@ -1384,7 +1406,9 @@ qt_signal(mrb_state* M, mrb_value self)
 		return mrb_nil_value();
 	}
 
-	QList<MocArgument*> args = get_moc_arguments(M, o->smoke, m->method(i).typeName(), m->method(i).parameterTypes());
+	QList<MocArgument> args;
+  QList<QByteArray> paramTypes = m->method(i).parameterTypes();
+  get_moc_arguments(M, o->smoke, m->method(i).typeName(), paramTypes, args);
 
 	mrb_value result = mrb_nil_value();
 	// Okay, we have the signal info. *whew*
@@ -1394,26 +1418,16 @@ qt_signal(mrb_state* M, mrb_value self)
 	return result;
 }
 
-void define_signal_slot(mrb_state* M, char const* name, MetaInfo& info, unsigned flags, unsigned& added) {
-  if(name[0] == '1' or name[0] == '2') { ++name; }
-  if(info.methods.find(name) != info.methods.end()) {
-    if(info.methods[name] != flags) {
-      mrb_raisef(M, mrb_class_get(M, "RuntimeError"), "%S already defined", mrb_str_new_cstr(M, name));
-    }
-  } else { ++added; }
-  info.methods[name] = flags;
-}
-
 // signal/slot
 mrb_value qt_base_signals(mrb_state* M, mrb_value self) {
   mrb_value* argv; int argc;
   mrb_get_args(M, "*", &argv, &argc);
   RClass* cls = get_class(M, self);
-  MetaInfo& info = get_meta_info(M, cls);
+  MetaInfo& info = MetaInfo::get(M, cls);
   unsigned added = 0;
   for(mrb_value* i = argv; i < (argv + argc); ++i) {
     char const* name = mrb_string_value_ptr(M, *i);
-    define_signal_slot(M, name, info, MethodSignal | AccessProtected, added);
+    info.define_method(M, name, MethodSignal | AccessProtected, added);
 		mrb_define_method(M, cls, std::regex_replace(name, std::regex("[12]?(\\w+)\\(.*\\)"), "$1").c_str(),
                       qt_signal, MRB_ARGS_ANY());
   }
@@ -1426,10 +1440,10 @@ mrb_value qt_base_slots(mrb_state* M, mrb_value self) {
   mrb_value* argv; int argc;
   mrb_get_args(M, "*", &argv, &argc);
   RClass* cls = get_class(M, self);
-  MetaInfo& info = get_meta_info(M, cls);
+  MetaInfo& info = MetaInfo::get(M, cls);
   unsigned added = 0;
   for(mrb_value* i = argv; i < (argv + argc); ++i) {
-    define_signal_slot(M, mrb_string_value_ptr(M, *i), info, Flags, added);
+    info.define_method(M, mrb_string_value_ptr(M, *i), Flags, added);
   }
   if(added == 0) { info.dirty = false; } // don't mark dirty if none is added
   return self;
@@ -1440,7 +1454,7 @@ mrb_value qt_base_slots(mrb_state* M, mrb_value self) {
 mrb_value qt_base_methodtag(mrb_state* M, mrb_value self) {
   char const* signature; char const* tag;
   mrb_get_args(M, "zz", &signature, &tag);
-  MetaInfo& info = get_meta_info(M, get_class(M, self));
+  MetaInfo& info = MetaInfo::get(M, get_class(M, self));
   assert(info.methods.find(signature) != info.methods.end());
   assert(info.method_tags.find(signature) == info.method_tags.end());
   info.method_tags[signature] = tag;
@@ -1450,7 +1464,7 @@ mrb_value qt_base_methodtag(mrb_state* M, mrb_value self) {
 mrb_value qt_base_classinfo(mrb_state* M, mrb_value self) {
   char const* key; char const* value;
   mrb_get_args(M, "zz", &key, &value);
-  MetaInfo& info = get_meta_info(M, get_class(M, self));
+  MetaInfo& info = MetaInfo::get(M, get_class(M, self));
   info.classinfos.emplace_back(key, value);
 
   // enable dbus mode if "D-Bus Interface" is defined
