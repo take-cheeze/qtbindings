@@ -947,6 +947,7 @@ qstringFromRString(mrb_state* M, mrb_value rstring) {
 
 mrb_value
 rstringFromQString(mrb_state* M, QString * s) {
+  if (s->isNull()) { return mrb_nil_value(); }
   QByteArray const str = s->toUtf8();
 	return mrb_str_new(M, str.constData(), str.size());
 }
