@@ -130,11 +130,13 @@ void marshall_from_ruby<bool *>(Marshall *m)
 		// A Qt::Boolean has been passed as a value
 		mrb_value temp = mrb_iv_get(m->M, rv, mrb_intern_lit(m->M, "@value"));
 		*b = mrb_test(temp);
-		mrb_iv_set(m->M, rv, mrb_intern_lit(m->M, "@value"), mrb_bool_value(*b));
 	} else { *b = mrb_test(rv); }
   m->item().s_voidp = b;
   m->next();
 
+  if (mrb_type(rv) == MRB_TT_OBJECT && not m->type().isConst()) {
+    mrb_iv_set(m->M, rv, mrb_intern_lit(m->M, "@value"), mrb_bool_value(*b));
+  }
 	if(m->cleanup() && m->type().isConst()) {
 		delete b;
 	}

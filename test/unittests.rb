@@ -79,7 +79,7 @@ assert('boolean marshalling') do
   v = Qt::Variant.new("Blah")
   v.toInt(b)
 
-  assert_nil b
+  assert_false b.value
 end
 
 assert('Qt::Integer#value') do
