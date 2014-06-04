@@ -1276,9 +1276,3 @@ class Module
     qt_methods(_public_methods(inc_super), 0x0, inc_super)
   end
 end
-
-class String
-  def =~(rex) rex.match self end
-  def !~(rex) not rex.match self end
-  def %(*args) sprintf self, *args end
-end
