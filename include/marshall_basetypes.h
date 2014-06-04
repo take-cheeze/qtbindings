@@ -73,7 +73,7 @@ template <>
 void marshall_to_ruby<SmokeEnumWrapper>(Marshall *m)
 {
   RObject* const ret = (RObject*)mrb_obj_alloc(
-      m->M, MRB_TT_OBJECT, mrb_class_get_under(m->M, mrb_class_get(m->M, "Qt"), "Enum"));
+      m->M, MRB_TT_OBJECT, mrb_class_get_under(m->M, mrb_module_get(m->M, "Qt"), "Enum"));
   mrb_obj_iv_set(m->M, ret, mrb_intern_lit(m->M, "@type"),
                  mrb_symbol_value(mrb_intern_cstr(m->M, m->type().name())));
   mrb_obj_iv_set(m->M, ret, mrb_intern_lit(m->M, "@value"), mrb_fixnum_value(m->item().s_enum));

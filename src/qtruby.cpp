@@ -88,15 +88,12 @@
 mrb_int
 get_mrb_int(mrb_state* M, mrb_value const& v);
 
-extern "C" mrb_value
-mrb_yield_internal(mrb_state *mrb, mrb_value b, int argc, mrb_value *argv, mrb_value self, struct RClass *c);
-
 mrb_value mrb_call_super(mrb_state* M, mrb_value self)
 {
   RClass* sup = M->c->ci->target_class->super;
   RProc* p = mrb_method_search_vm(M, &sup, M->c->ci->mid);
 
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
   if(!p) {
@@ -105,10 +102,10 @@ mrb_value mrb_call_super(mrb_state* M, mrb_value self)
     std::vector<mrb_value> args(argc + 1);
     args[0] = mrb_symbol_value(M->c->ci->mid);
     std::copy_n(argv, argc, args.begin() + 1);
-    return mrb_yield_internal(M, mrb_obj_value(p), args.size(), args.data(), self, sup);
+    return mrb_yield_with_class(M, mrb_obj_value(p), args.size(), args.data(), self, sup);
   }
 
-  return mrb_yield_internal(M, mrb_obj_value(p), argc, argv, self, sup);
+  return mrb_yield_with_class(M, mrb_obj_value(p), argc, argv, self, sup);
 }
 
 static mrb_value
@@ -139,7 +136,7 @@ getAllParents(ModuleIndex const& id, std::vector<ModuleIndex>& result)
 
 static auto const remove_operators = [](mrb_state* M, mrb_value const& v) {
   assert(mrb_symbol_p(v));
-  size_t len;
+  mrb_int len;
   char const* s = mrb_sym2name_len(M, mrb_symbol(v), &len);
   if(len == 1 or len == 2) {
     switch(s[0] | (len == 2? s[1] << 8 : 0)) {
@@ -694,7 +691,7 @@ q_unregister_resource_data(mrb_state* M, mrb_value /*self*/)
 static mrb_value
 qabstract_item_model_rowcount(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 	QAbstractItemModel * model = (QAbstractItemModel *) value_obj_info(M, self)->ptr;
@@ -713,7 +710,7 @@ qabstract_item_model_rowcount(mrb_state* M, mrb_value self)
 static mrb_value
 qabstract_item_model_columncount(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 	QAbstractItemModel * model = (QAbstractItemModel *) value_obj_info(M, self)->ptr;
@@ -902,7 +899,7 @@ qdbusargument_endstructurewrite(mrb_state* M, mrb_value self)
 static mrb_value
 qpainter_drawlines(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 static Smoke::Index drawlines_pointf_vector = 0;
@@ -963,7 +960,7 @@ static Smoke::Index drawlines_line_vector = 0;
 static mrb_value
 qpainter_drawrects(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 static Smoke::Index drawlines_rectf_vector = 0;
@@ -1012,7 +1009,7 @@ static Smoke::Index drawlines_rect_vector = 0;
 static mrb_value
 qabstractitemmodel_createindex(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 	if (argc == 2 || argc == 3) {
@@ -1366,7 +1363,7 @@ staticMetaObject(mrb_state* M, mrb_value self)
 static mrb_value
 qt_signal(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 	smokeruby_object *o = value_obj_info(M, self);
@@ -1375,7 +1372,7 @@ qt_signal(mrb_state* M, mrb_value self)
     return mrb_false_value();
   }
 
-  size_t len;
+  mrb_int len;
   QByteArray signalname(mrb_sym2name_len(M, M->c->ci->mid, &len), len);
 
   mrb_value metaObject_value = mrb_funcall(M, mrb_obj_value(qt_internal_module(M)), "getMetaObject", 2, mrb_nil_value(), self);
@@ -1420,7 +1417,7 @@ qt_signal(mrb_state* M, mrb_value self)
 
 // signal/slot
 mrb_value qt_base_signals(mrb_state* M, mrb_value self) {
-  mrb_value* argv; int argc;
+  mrb_value* argv; mrb_int argc;
   mrb_get_args(M, "*", &argv, &argc);
   RClass* cls = get_class(M, self);
   MetaInfo& info = MetaInfo::get(M, cls);
@@ -1437,7 +1434,7 @@ mrb_value qt_base_signals(mrb_state* M, mrb_value self) {
 
 template<unsigned Flags>
 mrb_value qt_base_slots(mrb_state* M, mrb_value self) {
-  mrb_value* argv; int argc;
+  mrb_value* argv; mrb_int argc;
   mrb_get_args(M, "*", &argv, &argc);
   RClass* cls = get_class(M, self);
   MetaInfo& info = MetaInfo::get(M, cls);
@@ -1452,7 +1449,7 @@ mrb_value qt_base_slots(mrb_state* M, mrb_value self) {
 #undef signal_slot_name_check
 
 mrb_value qt_base_methodtag(mrb_state* M, mrb_value self) {
-  char const* signature; char const* tag;
+  char* signature; char* tag;
   mrb_get_args(M, "zz", &signature, &tag);
   MetaInfo& info = MetaInfo::get(M, get_class(M, self));
   assert(info.methods.find(signature) != info.methods.end());
@@ -1462,7 +1459,7 @@ mrb_value qt_base_methodtag(mrb_state* M, mrb_value self) {
 }
 
 mrb_value qt_base_classinfo(mrb_state* M, mrb_value self) {
-  char const* key; char const* value;
+  char* key; char* value;
   mrb_get_args(M, "zz", &key, &value);
   MetaInfo& info = MetaInfo::get(M, get_class(M, self));
   info.classinfos.emplace_back(key, value);
@@ -1503,7 +1500,7 @@ cast_object_to(mrb_state* M, mrb_value /*self*/)
 
     Smoke::ModuleIndex const& cast_to_id = classcache.value(mrb_string_value_ptr(M, new_klassname));
     if (cast_to_id == Smoke::NullModuleIndex) {
-      mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "unable to find class \"%S\" to cast to\n", mrb_string_value_ptr(M, new_klassname));
+      mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "unable to find class \"%S\" to cast to\n", new_klassname);
     }
 
 	smokeruby_object * o_cast = alloc_smokeruby_object(	M, o->allocated,
@@ -1551,7 +1548,7 @@ qobject_qt_metacast(mrb_state* M, mrb_value self)
 static mrb_value
 qsignalmapper_mapping(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 	if (argc == 1 && mrb_type(argv[0]) == MRB_TT_DATA) {
@@ -1588,7 +1585,7 @@ qsignalmapper_mapping(mrb_state* M, mrb_value self)
 static mrb_value
 qsignalmapper_set_mapping(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 	if (argc == 2 && mrb_type(argv[0]) == MRB_TT_DATA && mrb_type(argv[1]) == MRB_TT_DATA) {
@@ -1759,7 +1756,7 @@ qvariant_value(mrb_state* M, mrb_value /*self*/)
 static mrb_value
 qvariant_from_value(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 	if (argc == 2) {
@@ -1829,7 +1826,7 @@ qvariant_from_value(mrb_state* M, mrb_value self)
 static mrb_value
 new_qvariant(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 static Smoke::Index new_qvariant_qlist = 0;
@@ -1897,7 +1894,7 @@ so initialize() can be allowed to proceed to the end.
 static mrb_value
 initialize_qt(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_value blk;
   mrb_get_args(M, "&*", &blk, &argv, &argc);
 
@@ -1944,7 +1941,7 @@ initialize_qt(mrb_state* M, mrb_value self)
 
   // If a ruby block was passed then run that now
   if (not mrb_nil_p(blk)) {
-    mrb_yield_internal(M, blk, 0, NULL, self, mrb_class(M, self));
+    mrb_yield_with_class(M, blk, 0, NULL, self, mrb_class(M, self));
   }
 
 	return self;
@@ -1975,10 +1972,10 @@ to_normalized_invoke_signature(char const* raw) {
 static mrb_value
 qobject_connect(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv; mrb_value blk;
+  mrb_int argc; mrb_value* argv; mrb_value blk;
   mrb_get_args(M, "&*", &blk, &argv, &argc);
   std::array<mrb_value, 4> args;
-  RClass* const Qt = mrb_class_get(M, "Qt");
+  RClass* const Qt = mrb_module_get(M, "Qt");
 
 	if (mrb_nil_p(blk)) {
 		if (argc == 3 and not mrb_string_p(argv[1])) {
@@ -2039,13 +2036,13 @@ qobject_connect(mrb_state* M, mrb_value self)
 static mrb_value
 qtimer_single_shot(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv; mrb_value blk;
+  mrb_int argc; mrb_value* argv; mrb_value blk;
   mrb_get_args(M, "&*", &blk, &argv, &argc);
 	if (not mrb_nil_p(blk) and argc == 2) {
     return mrb_funcall(
         M, self, "singleShot", 3, argv[0],
-        mrb_funcall(M, mrb_obj_value(mrb_class_get_under(M, mrb_class_get(M, "Qt"), "BlockInvocation")),
-                    "new", 2, argv[1], blk, mrb_str_new_cstr(M, "invoke()")),
+        mrb_funcall(M, mrb_obj_value(mrb_class_get_under(M, mrb_module_get(M, "Qt"), "BlockInvocation")),
+                    "new", 3, argv[1], blk, mrb_str_new_cstr(M, "invoke()")),
         mrb_str_new_cstr(M, SLOT(invoke())));
 	} else { return mrb_call_super(M, self); }
 }
@@ -2066,7 +2063,7 @@ class_name(mrb_state* M, mrb_value self)
 static mrb_value
 inherits_qobject(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 	if (argc != 1) {
@@ -2121,7 +2118,7 @@ rb_qFindChildren_helper(mrb_state* M, mrb_value parent, const QString &name, mrb
 static mrb_value
 find_qobject_children(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 	if (argc < 1 || argc > 2 || mrb_type(argv[0]) != MRB_TT_CLASS) mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
@@ -2172,7 +2169,7 @@ rb_qFindChild_helper(mrb_state* M, mrb_value parent, const QString &name, const 
 static mrb_value
 find_qobject_child(mrb_state* M, mrb_value self)
 {
-  int argc; mrb_value* argv;
+  mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "*", &argv, &argc);
 
 	if (argc < 1 || argc > 2 || mrb_type(argv[0]) != MRB_TT_CLASS) mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");

@@ -115,8 +115,8 @@ enum QtDebugChannel {
     qtdb_verbose = 0x20
 };
 
-#define qt_module(M) mrb_class_get(M, "Qt")
-#define qt_internal_module(M) mrb_class_get_under(M, qt_module(M), "Internal")
+#define qt_module(M) mrb_module_get(M, "Qt")
+#define qt_internal_module(M) mrb_module_get_under(M, qt_module(M), "Internal")
 
 #define qlistmodel_class(M) mrb_class_get_under(M, qt_module(M), "ListModel")
 #define qmetaobject_class(M) mrb_class_get_under(M, qt_module(M), "MetaObject")

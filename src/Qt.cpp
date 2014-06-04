@@ -98,7 +98,7 @@ get_mrb_int(mrb_state* M, mrb_value const& v) {
 	}
   else if(mrb_fixnum_p(v)) { return mrb_fixnum(v); }
   else if(mrb_float_p(v)) { return mrb_float(v); }
-  mrb_raisef(M, mrb_class_get(M, "TypeError"), "cannot convert %S to integer", v);
+        mrb_raisef(M, mrb_class_get(M, "TypeError"), "cannot convert %S to integer", mrb_value(v));
   return 0;
 }
 
@@ -352,7 +352,8 @@ public:
 
 	void unsupported()
 	{
-		mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as signal reply-type", mrb_intern_cstr(M, type().name()));
+          mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as signal reply-type",
+                     mrb_symbol_value(mrb_intern_cstr(M, type().name())));
     }
 	Smoke *smoke() { return type().smoke(); }
 
@@ -527,7 +528,7 @@ resolve_classname(smokeruby_object * o)
 const char *
 value_to_type_flag(mrb_state* M, mrb_value const& ruby_value)
 {
-  RClass* const Qt = mrb_class_get(M, "Qt");
+  RClass* const Qt = mrb_module_get(M, "Qt");
   RClass* const cls = mrb_class(M, ruby_value);
 	const char *r = NULL;
 
@@ -544,7 +545,7 @@ value_to_type_flag(mrb_state* M, mrb_value const& ruby_value)
 	else if (cls == mrb_class_get_under(M, Qt, "Enum")) {
 		mrb_value temp = mrb_iv_get(M, ruby_value, mrb_intern_lit(M, "@type"));
     assert(mrb_symbol_p(temp));
-    size_t len;
+    mrb_int len;
 		r = mrb_sym2name_len(M, mrb_symbol(temp), &len);
 	} else if (mrb_type(ruby_value) == MRB_TT_DATA) {
 		smokeruby_object *o = value_obj_info(M, ruby_value);
@@ -566,7 +567,7 @@ find_cached_selector(mrb_state* M, int argc, mrb_value * argv, RClass* klass, co
 {
   mrb_value const class_name = mrb_mod_cv_get(M, klass, mrb_intern_lit(M, "QtClassName"));
   assert(mrb_symbol_p(class_name));
-  size_t len;
+  mrb_int len;
   mcid = mrb_sym2name_len(M, mrb_symbol(class_name), &len);
 	mcid += ';';
 	mcid += methodName;
@@ -681,12 +682,12 @@ checkarg(char const* argtype, char const* type_name) {
 
 Smoke::ModuleIndex
 do_method_missing(mrb_state* M, char const* pkg, std::string method, RClass* cls, int argc, mrb_value const* argv) {
-  mrb_value cpp_name_value = cls == mrb_class_get(M, "Qt")
+  mrb_value cpp_name_value = cls == mrb_module_get(M, "Qt")
                              ? mrb_symbol_value(mrb_intern_lit(M, "Qt"))
                              : mrb_mod_cv_get(M, cls, mrb_intern_lit(M, "QtClassName"));
   if(mrb_nil_p(cpp_name_value)) { return Smoke::NullModuleIndex; }
   assert(mrb_symbol_p(cpp_name_value));
-  size_t len;
+  mrb_int len;
   char const* cpp_name = mrb_sym2name_len(M, mrb_symbol(cpp_name_value), &len);
 
   // Modify constructor method name from new to the name of the Qt class
@@ -830,9 +831,9 @@ do_method_missing(mrb_state* M, char const* pkg, std::string method, RClass* cls
 mrb_value
 method_missing(mrb_state* M, mrb_value self)
 {
-  mrb_sym sym; int argc; mrb_value* argv;
+  mrb_sym sym; mrb_int argc; mrb_value* argv;
   mrb_get_args(M, "n*", &sym, &argv, &argc);
-  size_t methodName_len;
+  mrb_int methodName_len;
   const char * methodName = mrb_sym2name_len(M, sym, &methodName_len);
   RClass* klass = mrb_class(M, self);
 
@@ -874,7 +875,7 @@ method_missing(mrb_state* M, mrb_value self)
   _current_method = do_method_missing(M, "Qt", methodName, mrb_class(M, self), argc, argv);
   return_if_found(_current_method);
 
-  size_t op_len;
+  mrb_int op_len;
   const char * op = mrb_sym2name_len(M, sym, &op_len);
   if (op_len == 1 && (*op == '-' or *op == '+' or *op == '/' or *op == '%' or *op == '|')) {
     // Look for operator methods of the form 'operator+=', 'operator-=' and so on..
@@ -953,9 +954,9 @@ method_missing(mrb_state* M, mrb_value self)
 mrb_value
 class_method_missing(mrb_state* M, mrb_value self)
 {
-  mrb_sym sym; mrb_value* argv; int argc;
+  mrb_sym sym; mrb_value* argv; mrb_int argc;
   mrb_get_args(M, "n*", &sym, &argv, &argc);
-  size_t methodName_len;
+  mrb_int methodName_len;
 	const char * methodName = mrb_sym2name_len(M, sym, &methodName_len);
 
   RClass* klass = mrb_type(self) == MRB_TT_MODULE or mrb_type(self) == MRB_TT_CLASS
@@ -1070,7 +1071,7 @@ get_moc_arguments(mrb_state* M, Smoke* smoke, const char * typeName, QList<QByte
 
 			if (typeId == 0) {
 				mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as slot argument\n",
-                   mrb_intern(M, name.constData(), name.size()));
+                                           mrb_symbol_value(mrb_intern(M, name.constData(), name.size())));
 			}
 
 			arg.st.set(smoke, typeId);
@@ -1128,7 +1129,7 @@ set_obj_info(mrb_state* M, const char * className, smokeruby_object * o)
   mrb_value klass = mrb_hash_get(M, mrb_mod_cv_get(
       M, qt_internal_module(M), mrb_intern_lit(M, "Classes")), className_sym);
   if (mrb_nil_p(klass)) {
-		mrb_raisef(M, mrb_class_get(M, "RuntimeError"), "Class '%S' not found", className_sym);
+    mrb_raisef(M, mrb_class_get(M, "RuntimeError"), "Class '%S' not found", mrb_value(className_sym));
 	}
 
 	Smoke::ModuleIndex const& r = classcache.value(className);

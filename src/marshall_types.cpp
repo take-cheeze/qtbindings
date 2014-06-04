@@ -151,7 +151,7 @@ smokeStackToQtStack(mrb_state* M, Smoke::Stack stack, void ** o, int start, int 
 				// allocate a new enum value
 				Smoke::EnumFn fn = SmokeClass(t).enumFn();
 				if (!fn) {
-					mrb_warn(M, "Unknown enumeration %S\n", mrb_intern_cstr(M, t.name()));
+                                  mrb_warn(M, "Unknown enumeration %S\n", mrb_symbol_value(mrb_intern_cstr(M, t.name())));
 					p = new int((int)si->s_enum);
 					break;
 				}
@@ -250,7 +250,7 @@ smokeStackFromQtStack(mrb_state* M, Smoke::Stack stack, void ** _o, int start, i
 			{
 				Smoke::EnumFn fn = SmokeClass(t).enumFn();
 				if (!fn) {
-					mrb_warn(M, "Unknown enumeration %S\n", mrb_intern_cstr(M, t.name()));
+                                  mrb_warn(M, "Unknown enumeration %S\n", mrb_symbol_value(mrb_intern_cstr(M, t.name())));
 					stack[j].s_enum = *(int*)o;
 					break;
 				}
@@ -318,9 +318,9 @@ void
 MethodReturnValueBase::unsupported()
 {
 	mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as return-type of %S::%S",
-             mrb_intern_cstr(M, type().name()),
-             mrb_intern_cstr(M, classname()),
-             mrb_intern_cstr(M, _module_index.smoke->methodNames[method().name]));
+                   mrb_symbol_value(mrb_intern_cstr(M, type().name())),
+                   mrb_symbol_value(mrb_intern_cstr(M, classname())),
+                   mrb_symbol_value(mrb_intern_cstr(M, _module_index.smoke->methodNames[method().name])));
 }
 
 mrb_value *
@@ -425,9 +425,9 @@ void
 MethodCallBase::unsupported()
 {
 	mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as argument of %S::%S",
-             mrb_intern_cstr(M, type().name()),
-             mrb_intern_cstr(M, classname()),
-             mrb_intern_cstr(M, _module_index.smoke->methodNames[method().name]));
+                   mrb_symbol_value(mrb_intern_cstr(M, type().name())),
+                   mrb_symbol_value(mrb_intern_cstr(M, classname())),
+                   mrb_symbol_value(mrb_intern_cstr(M, _module_index.smoke->methodNames[method().name])));
 }
 
 const char*
@@ -541,7 +541,8 @@ void MethodCall::callMethod() {
   _called = true;
 
   if (mrb_nil_p(_target) && !(method().flags & Smoke::mf_static)) {
-    mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "%s is not a class method\n", _module_index.smoke->methodNames[method().name]);
+    mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "%S is not a class method\n",
+               mrb_symbol_value(mrb_intern_cstr(M, _module_index.smoke->methodNames[method().name])));
   }
 	
   Smoke::ClassFn fn = _module_index.smoke->classes[method().classId].classFn;
@@ -609,7 +610,8 @@ void
 SigSlotBase::unsupported()
 {
 	mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as %S argument\n",
-             mrb_intern_cstr(M, type().name()), mrb_intern_cstr(M, mytype()) );
+                   mrb_symbol_value(mrb_intern_cstr(M, type().name())),
+                   mrb_symbol_value(mrb_intern_cstr(M, mytype())));
 }
 
 void
@@ -718,7 +720,7 @@ public:
 
 	void unsupported()
 	{
-		mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as slot reply-type", mrb_intern_cstr(M, type().name()));
+          mrb_raisef(M, mrb_class_get(M, "ArgumentError"), "Cannot handle '%S' as slot reply-type", mrb_symbol_value(mrb_intern_cstr(M, type().name())));
     }
 	Smoke *smoke() { return type().smoke(); }
 

@@ -32,7 +32,7 @@ mrb_value primitive_to_ruby<bool>(mrb_state*, bool sv)
 
 char
 get_mrb_char(mrb_state* M, mrb_value const& v) {
-  size_t len = 0;
+  mrb_int len = 0;
   char const* str = NULL;
   if(mrb_symbol_p(v)) {
     str = mrb_sym2name_len(M, mrb_symbol(v), &len);
@@ -182,8 +182,11 @@ mrb_value primitive_to_ruby<float>(mrb_state* M, float sv)
 template <>
 double ruby_to_primitive<double>(mrb_state*, mrb_value v)
 {
-  assert(mrb_nil_p(v) || mrb_float_p(v));
-  return mrb_nil_p(v)? 0.0 : (double) mrb_float(v);
+  assert(mrb_nil_p(v) || mrb_float_p(v) || mrb_fixnum_p(v));
+  return
+      mrb_nil_p(v)? 0.0:
+      mrb_fixnum_p(v)? mrb_fixnum(v):
+      (double) mrb_float(v);
 }
 
 template <>
