@@ -1,9 +1,3 @@
-class Qt::Point
-  def to_s
-    "(#{x}, #{y})"
-  end
-end
-
 assert('QPoint operator') do
   p1 = Qt::Point.new(5,5)
   p2 = Qt::Point.new(20,20)
@@ -17,23 +11,11 @@ assert('QPoint operator') do
   true
 end
 
-class Qt::Region
-  def to_s
-    "(#{empty?})"
-  end
-end
-
 assert('QRegion operator') do
   r1 = Qt::Region.new()
   r2 = Qt::Region.new( 100,100,200,80, Qt::Region::Ellipse )
   r1 + r2
   true
-end
-
-class Qt::WMatrix
-  def to_s
-    "(#{m11}, #{m12}, #{m21}, #{m22}, #{dx}, #{dy})"
-  end
 end
 
 assert('QMatrix operator') do

@@ -43,21 +43,7 @@ module Qt
   def Qt.debug_level; @@debug_level end
 
   class Base
-    def **(a) return Qt::**(self, a) end
-    def +(a) Qt::+(self, a) end
-    def ~(a) Qt::~(self, a) end
-    def -@() Qt::-(self) end
-    def -(a) Qt::-(self, a) end
-    def *(a) Qt::*(self, a) end
-    def /(a)
-      Qt::/(self, a) #/
-    end
-    def %(a) Qt::%(self, a) end
-    def >>(a) Qt::>>(self, a) end
-    def <<(a) Qt::<<(self, a) end
-    def &(a) Qt::&(self, a) end
-    def ^(a) Qt::^(self, a) end
-    def |(a) Qt::|(self, a) end
+    def -@; Qt::- self end
 
 #    Module has '<', '<=', '>' and '>=' operator instance methods, so pretend they
 #    don't exist by calling method_missing() explicitly
@@ -100,6 +86,10 @@ module Qt
       end
     end
   end # Qt::Base
+
+  class Point
+    def *(other) Qt::* self, other end
+  end
 
   # Provides a mutable numeric class for passing to methods with
   # C++ 'int*' or 'int&' arg types
