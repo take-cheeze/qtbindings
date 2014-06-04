@@ -59,6 +59,7 @@
 #include <mruby/class.h>
 #include <mruby/data.h>
 #include <mruby/variable.h>
+#include <mruby/error.h>
 
 #include <smoke.h>
 #include <smoke/qtcore_smoke.h>
@@ -74,7 +75,7 @@ bool application_terminated = false;
 QList<Smoke*> smokeList;
 QHash<Smoke*, QtRubyModule> qtruby_modules;
 
-int do_debug = -1;
+int do_debug = 0; // -1;
 
 typedef QHash<void *, SmokeValue> PointerMap;
 static QMutex pointer_map_mutex;
@@ -841,8 +842,8 @@ method_missing(mrb_state* M, mrb_value self)
   QByteArray pred = methodName;
 	pred = methodName;
 	if (pred.endsWith("?")) {
-		smokeruby_object *o = value_obj_info(M, self);
-		if(!o || !o->ptr) { return mrb_call_super(M, self); }
+          smokeruby_object *o = value_obj_info(M, self);
+          mrb_no_method_error(M, sym, argc, argv, "%S not found", mrb_symbol_value(sym));
 
 		// Drop the trailing '?', add 'is' prefix
 		pred.replace(pred.length() - 1, 1, "").replace(0, 1, pred.mid(0, 1).toUpper()).replace(0, 0, "is");
@@ -891,7 +892,7 @@ method_missing(mrb_state* M, mrb_value self)
   smokeruby_object *o = value_obj_info(M, self);
   if (	o == 0 or o->ptr == 0
         or not Smoke::isDerivedFrom(Smoke::ModuleIndex(o->smoke, o->classId), Smoke::findClass("QObject")) )
-  { return mrb_call_super(M, self); }
+  { mrb_no_method_error(M, sym, argc, argv, "%S not found", mrb_symbol_value(sym)); }
 
   QObject * qobject = (QObject *) o->smoke->cast(o->ptr, o->classId, o->smoke->idClass("QObject").index);
   QByteArray name(op, op_len);
@@ -948,7 +949,8 @@ method_missing(mrb_state* M, mrb_value self)
     classId = o->smoke->idClass(meta->className());
   }
 
-  return mrb_call_super(M, self);
+  mrb_no_method_error(M, sym, argc, argv, "%S not found", mrb_symbol_value(sym));
+  return self;
 }
 
 mrb_value
@@ -975,7 +977,10 @@ class_method_missing(mrb_state* M, mrb_value self)
     static QRegExp const rx("[a-zA-Z]+");
     // If an operator method hasn't been found as an instance method,
     // then look for a class method - after 'op(self,a)' try 'self.op(a)'
-    return rx.indexIn(methodName) == -1? method_missing(M, argv[1]) : mrb_call_super(M, self);
+    if (rx.indexIn(methodName) != -1) {
+      mrb_no_method_error(M, sym, argc, argv, "%S not found", mrb_symbol_value(sym));
+    }
+    return method_missing(M, argv[1]);
   }
   QtRuby::MethodCall c(M, _current_method, mrb_nil_value(), argv, argc);
   return c.next(), *(c.var());

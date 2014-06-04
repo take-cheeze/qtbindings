@@ -88,24 +88,26 @@
 mrb_int
 get_mrb_int(mrb_state* M, mrb_value const& v);
 
-mrb_value mrb_call_super(mrb_state* M, mrb_value self)
+mrb_value
+mrb_call_super(mrb_state *mrb, int argc, mrb_value const *argv)
 {
-  RClass* sup = M->c->ci->target_class->super;
-  RProc* p = mrb_method_search_vm(M, &sup, M->c->ci->mid);
-
-  mrb_int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
+  RClass* sup = mrb->c->ci->target_class->super;
+  RProc* p = mrb_method_search_vm(mrb, &sup, mrb->c->ci->mid);
 
   if(!p) {
-    p = mrb_method_search_vm(M, &sup, mrb_intern_lit(M, "method_missing"));
-    assert(p);
-    std::vector<mrb_value> args(argc + 1);
-    args[0] = mrb_symbol_value(M->c->ci->mid);
-    std::copy_n(argv, argc, args.begin() + 1);
-    return mrb_yield_with_class(M, mrb_obj_value(p), args.size(), args.data(), self, sup);
+    mrb_value* tmp; int i;
+    p = mrb_method_search_vm(mrb, &sup, mrb_intern_lit(mrb, "method_missing"));
+    mrb_assert(p); /* method_missing must be defined */
+    tmp = (mrb_value*)mrb_alloca(mrb, sizeof(mrb_value) * (argc + 1));
+    tmp[0] = mrb_symbol_value(mrb->c->ci->mid);
+    for(i = 1; i <= argc; ++i) {
+      tmp[i] = argv[i - 1];
+    }
+    argc += 1;
+    argv = tmp;
   }
 
-  return mrb_yield_with_class(M, mrb_obj_value(p), argc, argv, self, sup);
+  return mrb_yield_with_class(mrb, mrb_obj_value(p), argc, argv, mrb->c->stack[0], sup);
 }
 
 static mrb_value
@@ -318,14 +320,14 @@ qt_base_ancestors(mrb_state* M, mrb_value self)
   for(; classid == Smoke::NullModuleIndex;
       classid = find_pclassid(mrb_class_name(M, klass))) {
     klass = klass->super;
-    if(not klass) { return mrb_call_super(M, self); }
+    if(not klass) { return mrb_call_super(M, 0, nullptr); }
   }
 
   assert(mrb_type(self) == MRB_TT_CLASS);
 
   mrb_value const Classes = mrb_mod_cv_get(M, qt_internal_module(M), mrb_intern_lit(M, "Classes"));
 
-  mrb_value klasses = mrb_call_super(M, self);
+  mrb_value klasses = mrb_call_super(M, 0, nullptr);
   std::vector<ModuleIndex> ids;
   getAllParents(classid, ids);
   for(auto const& i : ids) {
@@ -529,7 +531,7 @@ inspect_qobject(mrb_state* M, mrb_value self)
 
 	// Start with #<Qt::HBoxLayout:0x30139030> from the original inspect() call
 	// Drop the closing '>'
-	mrb_value inspect_str = mrb_str_to_str(M, mrb_call_super(M, self));
+	mrb_value inspect_str = mrb_str_to_str(M, mrb_call_super(M, 0, nullptr));
 	mrb_str_resize(M, inspect_str, RSTRING_LEN(inspect_str) - 1);
 
 	smokeruby_object * o = 0;
@@ -946,7 +948,7 @@ static Smoke::Index drawlines_line_vector = 0;
 			_current_method.smoke = qtcore_Smoke;
 			_current_method.index = drawlines_line_vector;
 		} else {
-			return mrb_call_super(M, self);
+                  return mrb_call_super(M, argc, argv);
 		}
 
 		QtRuby::MethodCall c(M, _current_method, self, argv, argc - 1);
@@ -954,7 +956,7 @@ static Smoke::Index drawlines_line_vector = 0;
 		return self;
 	}
 
-	return mrb_call_super(M, self);
+	return mrb_call_super(M, argc, argv);
 }
 
 static mrb_value
@@ -995,7 +997,7 @@ static Smoke::Index drawlines_rect_vector = 0;
 			_current_method.smoke = qtcore_Smoke;
 			_current_method.index = drawlines_rect_vector;
 		} else {
-			return mrb_call_super(M, self);
+                  return mrb_call_super(M, argc, argv);
 		}
 
 		QtRuby::MethodCall c(M, _current_method, self, argv, argc-1);
@@ -1003,7 +1005,7 @@ static Smoke::Index drawlines_rect_vector = 0;
 		return self;
 	}
 
-	return mrb_call_super(M, self);
+	return mrb_call_super(M, argc, argv);
 }
 
 static mrb_value
@@ -1045,7 +1047,7 @@ qabstractitemmodel_createindex(mrb_state* M, mrb_value self)
 		}
 	}
 
-	return mrb_call_super(M, self);
+	return mrb_call_super(M, argc, argv);
 }
 
 static mrb_value
@@ -1579,7 +1581,7 @@ qsignalmapper_mapping(mrb_state* M, mrb_value self)
 		}
 	}
 
-	return mrb_call_super(M, self);
+	return mrb_call_super(M, argc, argv);
 }
 
 static mrb_value
@@ -1616,7 +1618,7 @@ qsignalmapper_set_mapping(mrb_state* M, mrb_value self)
 		}
 	}
 
-	return mrb_call_super(M, self);
+	return mrb_call_super(M, argc, argv);
 }
 
 static int rObject_typeId;
@@ -1864,7 +1866,7 @@ static Smoke::Index new_qvariant_qmap = 0;
 		return *(c.var());
 	}
 
-	return mrb_call_super(M, self);
+	return mrb_call_super(M, argc, argv);
 }
 
 /*
@@ -1992,7 +1994,7 @@ qobject_connect(mrb_state* M, mrb_value self)
               argv[1], mrb_symbol_value(mrb_intern(M, method_name.data(), method_name.size())),
               mrb_symbol_value(mrb_intern(M, signature.constData(), signature.size()))),
           mrb_symbol_value(mrb_intern(M, signature.constData(), signature.size())) } };
-		} else { return mrb_call_super(M, self); }
+		} else { return mrb_call_super(M, argc, argv); }
   } else {
     switch(argc) {
       case 1: {
@@ -2044,7 +2046,7 @@ qtimer_single_shot(mrb_state* M, mrb_value self)
         mrb_funcall(M, mrb_obj_value(mrb_class_get_under(M, mrb_module_get(M, "Qt"), "BlockInvocation")),
                     "new", 3, argv[1], blk, mrb_str_new_cstr(M, "invoke()")),
         mrb_str_new_cstr(M, SLOT(invoke())));
-	} else { return mrb_call_super(M, self); }
+	} else { return mrb_call_super(M, argc, argv); }
 }
 
 // --------------- Ruby C functions for Qt::_internal.* helpers  ----------------
@@ -2067,16 +2069,16 @@ inherits_qobject(mrb_state* M, mrb_value self)
   mrb_get_args(M, "*", &argv, &argc);
 
 	if (argc != 1) {
-		return mrb_call_super(M, self);
+          return mrb_call_super(M, argc, argv);
 	}
 
 	Smoke::ModuleIndex const& classId = classcache.value(mrb_string_value_ptr(M, argv[0]));
 
 	if (classId == Smoke::NullModuleIndex) {
-		return mrb_call_super(M, self);
+          return mrb_call_super(M, argc, argv);
 	} else {
 		// mrb_value super_class = mrb_str_new_cstr(M, classId.smoke->classes[classId.index].className);
-		return mrb_call_super(M, self);
+          return mrb_call_super(M, argc, argv);
 	}
 }
 

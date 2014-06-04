@@ -124,7 +124,7 @@ enum QtDebugChannel {
 #define qt_base_class(M) mrb_class_get_under(M, qt_module(M), "Base")
 #define qvariant_class(M) mrb_class_get_under(M, qt_module(M), "Variant")
 
-  mrb_value mrb_call_super(mrb_state* M, mrb_value self);
+mrb_value mrb_call_super(mrb_state* M, int argc, const mrb_value *argv);
 
 extern Q_DECL_EXPORT bool application_terminated;
 extern Q_DECL_EXPORT void set_qtruby_embedded(bool yn);
