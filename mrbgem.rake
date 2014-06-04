@@ -18,5 +18,5 @@ MRuby::Gem::Specification.new('mruby-qt') do |spec|
 
     'qscintilla2']
 
-  spec.add_dependency 'mruby-onig-regexp'
+  spec.add_dependency 'mruby-onig-regexp', :github => 'mattn/mruby-onig-regexp'
 end
