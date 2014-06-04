@@ -17,38 +17,38 @@ assert('Qt::Widget#children') do
   w2 = Qt::Widget.new w1
   w3 = Qt::Widget.new w1
 
-  assert w1.children == [ w2, w3 ]
+  assert_equal [ w2, w3 ], w1.children
 end
 
 assert('Qt::Widget#findChildren') do
   w = Qt::Widget.new
   assert_raise(TypeError) { w.findChildren(nil) }
 
-  assert_equal w.findChildren(Qt::Widget), [ ]
+  assert_equal [], w.findChildren(Qt::Widget)
   w2 = Qt::Widget.new w
 
-  assert_equal w.findChildren(Qt::Widget), [ w2 ]
-  assert_equal w.findChildren(Qt::Object), [ w2 ]
-  assert_equal w.findChildren(Qt::LineEdit), [ ]
-  assert_equal w.findChildren(Qt::Widget,"Bob"), [ ]
-  assert_equal w.findChildren(Qt::Object,"Bob"), [ ]
+  assert_equal [w2], w.findChildren(Qt::Widget)
+  assert_equal [w2], w.findChildren(Qt::Object)
+  assert_equal [], w.findChildren(Qt::LineEdit)
+  assert_equal [], w.findChildren(Qt::Widget,"Bob")
+  assert_equal [], w.findChildren(Qt::Object,"Bob")
 
   w2.objectName = "Bob"
 
-  assert_equal w.findChildren(Qt::Widget), [ w2 ]
-  assert_equal w.findChildren(Qt::Object), [ w2 ]
-  assert_equal w.findChildren(Qt::Widget,"Bob"), [ w2 ]
-  assert_equal w.findChildren(Qt::Object,"Bob"), [ w2 ]
-  assert_equal w.findChildren(Qt::LineEdit, "Bob"), [ ]
+  assert_equal [w2], w.findChildren(Qt::Widget)
+  assert_equal [w2], w.findChildren(Qt::Object)
+  assert_equal [w2], w.findChildren(Qt::Widget,"Bob")
+  assert_equal [w2], w.findChildren(Qt::Object,"Bob")
+  assert_equal [], w.findChildren(Qt::LineEdit, "Bob")
 
   w3 = Qt::Widget.new w
   w4 = Qt::LineEdit.new w2
   w4.setObjectName("Bob")
 
-  assert_equal w.findChildren(Qt::Widget), [ w4, w2, w3 ]
-  assert_equal w.findChildren(Qt::LineEdit), [ w4 ]
-  assert_equal w.findChildren(Qt::Widget,"Bob"), [ w4, w2 ]
-  assert_equal w.findChildren(Qt::LineEdit,"Bob"), [ w4 ]
+  assert_equal [w2, w4, w3], w.findChildren(Qt::Widget)
+  assert_equal [w4], w.findChildren(Qt::LineEdit)
+  assert_equal [w2, w4], w.findChildren(Qt::Widget,"Bob")
+  assert_equal [w4], w.findChildren(Qt::LineEdit,"Bob")
 end
 
 assert('Qt::Widget#findChild') do

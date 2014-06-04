@@ -2065,53 +2065,47 @@ class_name(mrb_state* M, mrb_value self)
 static mrb_value
 inherits_qobject(mrb_state* M, mrb_value self)
 {
-  mrb_int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
+  mrb_value str;
+  mrb_get_args(M, "S", &str);
 
-	if (argc != 1) {
-          return mrb_call_super(M, argc, argv);
-	}
+  Smoke::ModuleIndex const& classId = classcache.value(mrb_string_value_ptr(M, str));
 
-	Smoke::ModuleIndex const& classId = classcache.value(mrb_string_value_ptr(M, argv[0]));
-
-	if (classId == Smoke::NullModuleIndex) {
-          return mrb_call_super(M, argc, argv);
-	} else {
-		// mrb_value super_class = mrb_str_new_cstr(M, classId.smoke->classes[classId.index].className);
-          return mrb_call_super(M, argc, argv);
-	}
+  if (classId != Smoke::NullModuleIndex) {
+    str = mrb_str_new_cstr(M, classId.smoke->classes[classId.index].className);
+  }
+  return mrb_call_super(M, 1, &str);
 }
 
 /* Adapted from the internal function qt_qFindChildren() in qobject.cpp */
 static void
 rb_qFindChildren_helper(mrb_state* M, mrb_value parent, const QString &name, mrb_value re,
-                         const QMetaObject &mo, mrb_value list)
+                        const QMetaObject &mo, mrb_value list)
 {
   if (mrb_nil_p(parent) || mrb_nil_p(list))
-        return;
-	mrb_value children = mrb_funcall(M, parent, "children", 0);
+    return;
+  mrb_value children = mrb_funcall(M, parent, "children", 0);
   mrb_value rv = mrb_nil_value();
-    for (int i = 0; i < RARRAY_LEN(children); ++i) {
-        rv = RARRAY_PTR(children)[i];
-		smokeruby_object *o = value_obj_info(M, rv);
-		QObject * obj = (QObject *) o->smoke->cast(o->ptr, o->classId, o->smoke->idClass("QObject").index);
+  for (int i = 0; i < RARRAY_LEN(children); ++i) {
+    rv = RARRAY_PTR(children)[i];
+    smokeruby_object *o = value_obj_info(M, rv);
+    QObject * obj = (QObject *) o->smoke->cast(o->ptr, o->classId, o->smoke->idClass("QObject").index);
 
-		// The original code had 'if (mo.cast(obj))' as a test, but it doesn't work here
-        if (obj->qt_metacast(mo.className()) != 0) {
-          if (not mrb_nil_p(re)) {
-            mrb_value re_test = mrb_funcall(M, re, "=~", 1, mrb_funcall(M, rv, "objectName", 0));
-            if (not mrb_nil_p(re_test) && mrb_type(re_test) != MRB_TT_FALSE) {
-              mrb_ary_push(M, list, rv);
-				}
-            } else {
-                if (name.isNull() || obj->objectName() == name) {
-                  mrb_ary_push(M, list, rv);
-				}
-            }
+    // The original code had 'if (mo.cast(obj))' as a test, but it doesn't work here
+    if (obj->qt_metacast(mo.className()) != 0) {
+      if (not mrb_nil_p(re)) {
+        mrb_value re_test = mrb_funcall(M, re, "=~", 1, mrb_funcall(M, rv, "objectName", 0));
+        if (not mrb_nil_p(re_test) && mrb_type(re_test) != MRB_TT_FALSE) {
+          mrb_ary_push(M, list, rv);
         }
-        rb_qFindChildren_helper(M, rv, name, re, mo, list);
+      } else {
+        if (name.isNull() || obj->objectName() == name) {
+          mrb_ary_push(M, list, rv);
+        }
+      }
     }
-	return;
+    rb_qFindChildren_helper(M, rv, name, re, mo, list);
+  }
+  return;
 }
 
 /* Should mimic Qt4's QObject::findChildren method with this syntax:
@@ -2120,28 +2114,19 @@ rb_qFindChildren_helper(mrb_state* M, mrb_value parent, const QString &name, mrb
 static mrb_value
 find_qobject_children(mrb_state* M, mrb_value self)
 {
-  mrb_int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
+  mrb_value cls, re = mrb_nil_value();
+  mrb_get_args(M, "C|o", &cls, &re);
 
-	if (argc < 1 || argc > 2 || mrb_type(argv[0]) != MRB_TT_CLASS) mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
+  QString name;
+  if (mrb_string_p(re)) {
+    name = QString::fromLatin1(mrb_string_value_ptr(M, re));
+    re = mrb_nil_value();
+  }
 
-	QString name;
-	mrb_value re = mrb_nil_value();
-	if (argc == 2) {
-		// If the second arg isn't a String, assume it's a regular expression
-		if (mrb_type(argv[1]) == MRB_TT_STRING) {
-			name = QString::fromLatin1(mrb_string_value_ptr(M, argv[1]));
-		} else {
-			re = argv[1];
-		}
-	}
-
-	mrb_value metaObject = mrb_funcall(M, argv[0], "staticMetaObject", 0);
-	smokeruby_object *o = value_obj_info(M, metaObject);
-	QMetaObject * mo = (QMetaObject*) o->ptr;
-	mrb_value result = mrb_ary_new(M);
-	rb_qFindChildren_helper(M, self, name, re, *mo, result);
-	return result;
+  smokeruby_object *o = value_obj_info(M, mrb_funcall(M, cls, "staticMetaObject", 0));
+  mrb_value result = mrb_ary_new(M);
+  rb_qFindChildren_helper(M, self, name, re, *reinterpret_cast<QMetaObject*>(o->ptr), result);
+  return result;
 }
 
 /* Adapted from the internal function qt_qFindChild() in qobject.cpp */
@@ -2171,20 +2156,13 @@ rb_qFindChild_helper(mrb_state* M, mrb_value parent, const QString &name, const 
 static mrb_value
 find_qobject_child(mrb_state* M, mrb_value self)
 {
-  mrb_int argc; mrb_value* argv;
-  mrb_get_args(M, "*", &argv, &argc);
+  mrb_value cls; char *str = nullptr;
+  mrb_get_args(M, "C|z", &cls, &str);
 
-	if (argc < 1 || argc > 2 || mrb_type(argv[0]) != MRB_TT_CLASS) mrb_raise(M, mrb_class_get(M, "ArgumentError"), "Invalid argument list");
-
-	QString name;
-	if (argc == 2) {
-		name = QString::fromLatin1(mrb_string_value_ptr(M, argv[1]));
-	}
-
-	mrb_value metaObject = mrb_funcall(M, argv[0], "staticMetaObject", 0);
-	smokeruby_object *o = value_obj_info(M, metaObject);
-	QMetaObject * mo = (QMetaObject*) o->ptr;
-	return rb_qFindChild_helper(M, self, name, *mo);
+  mrb_value metaObject = mrb_funcall(M, cls, "staticMetaObject", 0);
+  smokeruby_object *o = value_obj_info(M, metaObject);
+  QMetaObject * mo = (QMetaObject*) o->ptr;
+  return rb_qFindChild_helper(M, self, str, *mo);
 }
 
 static mrb_value
