@@ -106,7 +106,7 @@ assert('Qt::Variant') do
 
   assert_equal Qt::Variant.new("Blah").toStringList, [ "Blah" ]
 
-  assert_equal Qt::Variant.new(Qt::Size.new(30,40)).toSize,::Size.new(30,40)
+  assert_equal Qt::Variant.new(Qt::Size.new(30,40)).toSize,Qt::Size.new(30,40)
   assert_equal Qt::Variant.new(Qt::SizeF.new(20,30)).toSizeF, Qt::SizeF.new(20,30)
 
   assert_equal Qt::Variant.new(Qt::Rect.new(30,40,10,10)).toRect, Qt::Rect.new(30,40,10,10)
